@@ -149,6 +149,40 @@ def _generate_bird_patch_texture(out_dir: Path) -> str:
     return str(tex_path)
 
 
+def _make_torus_bmesh(
+    major_radius: float,
+    minor_radius: float,
+    major_segments: int = 28,
+    minor_segments: int = 12,
+    scale_y: float = 1.0,
+) -> bmesh.types.BMesh:
+    bm = bmesh.new()
+    rings: List[List[bmesh.types.BMVert]] = []
+    for i in range(major_segments):
+        theta = (2.0 * math.pi * i) / major_segments
+        ct, st = math.cos(theta), math.sin(theta)
+        ring = []
+        for j in range(minor_segments):
+            phi = (2.0 * math.pi * j) / minor_segments
+            r = major_radius + minor_radius * math.cos(phi)
+            x = r * ct
+            y = r * st * scale_y
+            z = minor_radius * math.sin(phi)
+            ring.append(bm.verts.new((x, y, z)))
+        rings.append(ring)
+    for i in range(major_segments):
+        i_next = (i + 1) % major_segments
+        for j in range(minor_segments):
+            j_next = (j + 1) % minor_segments
+            bm.faces.new([
+                rings[i][j],
+                rings[i_next][j],
+                rings[i_next][j_next],
+                rings[i][j_next],
+            ])
+    return bm
+
+
 def _create_bone_parented_mesh(
     name: str,
     bm: bmesh.types.BMesh,
@@ -366,6 +400,7 @@ def build_mechanic_character(torch_obj: Optional[bpy.types.Object] = None) -> Di
     arm_obj.location = (rx, ry, rz)
     link_exclusively(arm_obj, char_col)
 
+    arm_obj.select_set(True)
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode="EDIT")
     ebones = arm_data.edit_bones
@@ -685,25 +720,11 @@ def build_mechanic_character(torch_obj: Optional[bpy.types.Object] = None) -> Di
     _create_bone_parented_mesh("Char_LeftHip_Pouch", bm_lpouch, char_col, mat_belt, arm_obj, "Pelvis", W(-0.205, 0.02, 0.715), outline_thickness=0.006)
 
     # Coiled Copper Torus on Left Hip
-    bpy.ops.mesh.primitive_torus_add(
-        major_radius=0.045, minor_radius=0.011, major_segments=24, minor_segments=10,
-        location=W(-0.238, 0.02, 0.695), rotation=(0.0, math.pi * 0.5 - 0.18, 0.0)
+    bm_coil = _make_torus_bmesh(major_radius=0.045, minor_radius=0.011, major_segments=24, minor_segments=10)
+    _create_bone_parented_mesh(
+        "Char_LeftHip_CopperCoil", bm_coil, char_col, mat_copper, arm_obj, "Pelvis",
+        W(-0.238, 0.02, 0.695), world_rot=(0.0, math.pi * 0.5 - 0.18, 0.0), outline_thickness=0.004
     )
-    coil_obj = bpy.context.active_object
-    coil_obj.name = "Char_LeftHip_CopperCoil"
-    coil_obj.data.materials.append(mat_copper)
-    for p in coil_obj.data.polygons:
-        p.use_smooth = True
-    apply_cel_outline(coil_obj, thickness=0.004)
-    link_exclusively(coil_obj, char_col)
-    bone_pelv = arm_obj.data.bones["Pelvis"]
-    p_world_pelv = arm_obj.matrix_world @ bone_pelv.matrix_local @ Matrix.Translation((0.0, bone_pelv.length, 0.0))
-    c_wmat = coil_obj.matrix_world.copy()
-    coil_obj.parent = arm_obj
-    coil_obj.parent_type = "BONE"
-    coil_obj.parent_bone = "Pelvis"
-    coil_obj.matrix_parent_inverse = p_world_pelv.inverted()
-    coil_obj.matrix_world = c_wmat
 
     # ---- C) CHUBBY-OVAL HEAD, EARS, RIGHT-EAR PENCIL & WINDSWEPT BOLT HAIR ----
     bm_head = bmesh.new()
@@ -914,27 +935,11 @@ def build_mechanic_character(torch_obj: Optional[bpy.types.Object] = None) -> Di
 
     # ---- E) ARTICULATED BRASS WELDING GOGGLES RIG (`Goggles_Ctrl` & `Goggles_Loupe`) ----
     # Black Elastic Strap around Head
-    bpy.ops.mesh.primitive_torus_add(
-        major_radius=0.236, minor_radius=0.018, major_segments=36, minor_segments=12,
-        location=W(0.0, -0.008, 1.355), rotation=(-0.10, -0.08, 0.0)
+    bm_strap = _make_torus_bmesh(major_radius=0.236, minor_radius=0.018, major_segments=36, minor_segments=12, scale_y=0.89)
+    _create_bone_parented_mesh(
+        "Char_Goggles_Strap", bm_strap, char_col, mat_strap, arm_obj, "Goggles_Ctrl",
+        W(0.0, -0.008, 1.355), world_rot=(-0.10, -0.08, 0.0), outline_thickness=0.005
     )
-    strap_obj = bpy.context.active_object
-    strap_obj.name = "Char_Goggles_Strap"
-    for v in strap_obj.data.vertices:
-        v.co.y *= 0.89
-    strap_obj.data.materials.append(mat_strap)
-    for p in strap_obj.data.polygons:
-        p.use_smooth = True
-    apply_cel_outline(strap_obj, thickness=0.005)
-    link_exclusively(strap_obj, char_col)
-    bone_gc = arm_obj.data.bones["Goggles_Ctrl"]
-    p_world_gc = arm_obj.matrix_world @ bone_gc.matrix_local @ Matrix.Translation((0.0, bone_gc.length, 0.0))
-    s_wmat = strap_obj.matrix_world.copy()
-    strap_obj.parent = arm_obj
-    strap_obj.parent_type = "BONE"
-    strap_obj.parent_bone = "Goggles_Ctrl"
-    strap_obj.matrix_parent_inverse = p_world_gc.inverted()
-    strap_obj.matrix_world = s_wmat
 
     # Asymmetric Brass Cups: Left (-X) is LARGER (r=0.056), Right (+X) is SMALLER (r=0.044)
     for cup_tag, cx_g, r_cup in (("LeftLarge", -0.066, 0.056), ("RightSmall", 0.064, 0.044)):

@@ -698,6 +698,7 @@ def _build_welder_torch_and_cable(col: bpy.types.Collection) -> Dict[str, bpy.ty
         bp = spline.bezier_points[idx]
         bp.handle_left_type = "ALIGNED"
         bp.handle_right_type = "ALIGNED"
+        hm.center = tuple(pts[idx])
         hm.vertex_indices_set([idx * 3, idx * 3 + 1, idx * 3 + 2])
         hm.matrix_inverse = target_empty.matrix_world.inverted()
 

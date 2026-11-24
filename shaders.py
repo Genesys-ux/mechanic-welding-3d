@@ -426,7 +426,8 @@ def create_weld_seam_material(name: str = "Mat_WeldSeam_Ember") -> Tuple[bpy.typ
 
     # Local hotness near the moving torch head (small sub_vis = white-hot puddle, larger = orange ember)
     dist_map = nt.nodes.new("ShaderNodeMapRange")
-    dist_map.use_clamp = True
+    if hasattr(dist_map, "clamp"):
+        dist_map.clamp = True
     dist_map.location = (-100, -40)
     dist_map.inputs["From Min"].default_value = 0.0
     dist_map.inputs["From Max"].default_value = 0.38
