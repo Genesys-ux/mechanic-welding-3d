@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Render mode (debug = Frame 20, 85, 155, 240; final = Full 1080p MP4 + .blend)"
+        description: "Render mode (debug = 12 preview frames [1,20,45,70,85,105,125,155,185,210,240,260]; final = Full 1080p MP4 + .blend)"
         required: true
         default: "debug"
         type: choice
@@ -76,6 +76,7 @@ jobs:
 
       - name: "Stage 1: Export 360° Camera-to-Mechanic Sync (Blender)"
         run: |
+          rm -rf output/char_frames output/debug_frames
           "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
             --python export_camera_sync.py -- --mode "${{ inputs.mode }}"
 
@@ -93,6 +94,10 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x1024x24" \
             "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
             --python main.py -- --mode "${{ inputs.mode }}" --fast-ci
+          ls -lh output/debug_frames/*.png
+          COUNT=$(ls -1 output/debug_frames/debug_frame_*.png | wc -l)
+          echo "Rendered debug frame count: ${COUNT}"
+          [ "${COUNT}" -eq 12 ] || exit 1
 
       - name: Upload Render Output Artifact (${{ inputs.mode }})
         uses: actions/upload-artifact@v4

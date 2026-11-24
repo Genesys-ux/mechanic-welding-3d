@@ -6,7 +6,7 @@ Project: Young Mechanic Welding 3D Cel-Shaded Short Animation (2.5D Dynamic Bill
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 # ==============================================================================
 # PATHS
@@ -34,7 +34,9 @@ RES_Y: int = 1080
 DEBUG_RES_X: int = 960
 DEBUG_RES_Y: int = 540
 
-DIAGNOSTIC_FRAMES: Tuple[int, ...] = (20, 85, 155, 240)
+# 12 evenly distributed preview frames across the 264-frame animation
+DEBUG_FRAMES: List[int] = [1, 20, 45, 70, 85, 105, 125, 155, 185, 210, 240, 260]
+DIAGNOSTIC_FRAMES: Tuple[int, ...] = tuple(DEBUG_FRAMES)
 RANDOM_SEED: int = 42
 
 # ==============================================================================
@@ -63,16 +65,38 @@ WELD_ARC_END: int = 203
 # ==============================================================================
 # SPATIAL ANCHORS (World Coordinates in Meters, Blender Z-Up)
 # ==============================================================================
-# Empty_Mechanic sits beside the front-left fender (27cm from seam so 21cm torch bridges hand->fender!)
-MECHANIC_ROOT_POS: Tuple[float, float, float] = (-0.14, -0.72, 0.0)
+# Empty_Mechanic stands beside the grounded front-left fender so the 21.3cm 3D torch
+# bridges cleanly from Mekanik Muda's right hand (`raHnd`) right onto the car body seam!
+MECHANIC_ROOT_POS: Tuple[float, float, float] = (-0.26, -0.795, 0.0)
 MECHANIC_BASE_YAW_DEG: float = 36.0
 
-# Exact 3D weld seam along the car's front-left fender arch/panel
-WELD_SEAM_START: Tuple[float, float, float] = (-0.34, -0.43, 0.955)
-WELD_SEAM_MID: Tuple[float, float, float] = (-0.17, -0.445, 0.975)
-WELD_SEAM_END: Tuple[float, float, float] = (0.01, -0.43, 0.945)
+MECHANIC_POS_KEYS: List[Tuple[int, Tuple[float, float, float]]] = [
+    (1,   (-0.26, -0.795, 0.0)),
+    (85,  (-0.26, -0.795, 0.0)),
+    (111, (-0.34, -0.805, 0.0)),
+    (155, (-0.20, -0.788, 0.0)),
+    (205, (-0.06, -0.772, 0.0)),
+    (235, (-0.18, -0.790, 0.0)),
+    (264, (-0.18, -0.790, 0.0)),
+]
 
-FENDER_LEFT_HAND_REST: Tuple[float, float, float] = (-0.46, -0.47, 1.035)
+MECHANIC_YAW_KEYS: List[Tuple[int, float]] = [
+    (1,   36.0),
+    (85,  40.0),
+    (113, 30.0),
+    (155, 26.0),
+    (203, 22.0),
+    (232, 56.0),
+    (240, 58.0),
+    (264, 56.0),
+]
+
+# Fallback 3D weld seam anchors (overridden dynamically at runtime by exact ray_cast onto car fender!)
+WELD_SEAM_START: Tuple[float, float, float] = (-0.40, -0.416, 0.742)
+WELD_SEAM_MID: Tuple[float, float, float] = (-0.25, -0.420, 0.750)
+WELD_SEAM_END: Tuple[float, float, float] = (-0.10, -0.423, 0.742)
+
+FENDER_LEFT_HAND_REST: Tuple[float, float, float] = (-0.46, -0.42, 0.79)
 
 # MIG Welder unit & Gas Cylinder position
 WELDER_UNIT_POS: Tuple[float, float, float] = (0.92, -1.32, 0.0)

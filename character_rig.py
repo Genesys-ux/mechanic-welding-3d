@@ -25,10 +25,21 @@ from config import (
     CHAR_Z_BOTTOM_OFFSET,
     FRAME_END,
     FRAME_START,
-    MECHANIC_BASE_YAW_DEG,
+    MECHANIC_POS_KEYS,
     MECHANIC_ROOT_POS,
+    MECHANIC_YAW_KEYS,
 )
 from env_props import get_or_create_collection, link_exclusively
+from vfx_lighting import _get_action_fcurves
+
+
+def _smooth_fcurves(obj: bpy.types.Object) -> None:
+    for fc in _get_action_fcurves(obj):
+        for kp in fc.keyframe_points:
+            kp.interpolation = "BEZIER"
+            kp.handle_left_type = "AUTO_CLAMPED"
+            kp.handle_right_type = "AUTO_CLAMPED"
+        fc.update()
 
 
 def _create_shadeless_25d_sequence_material(
@@ -113,26 +124,22 @@ def build_mechanic_character(camera_obj: bpy.types.Object) -> Dict[str, Any]:
     """
     char_col = get_or_create_collection("Col_Mechanic_Character")
 
-    # 1) Root Anchor `Empty_Mechanic` at Z=0 floor contact
+    # 1) Root Anchor `Empty_Mechanic` at Z=0 floor contact, stepping smoothly along the weld pass
     mech_empty = bpy.data.objects.new("Empty_Mechanic", None)
     mech_empty.empty_display_type = "SINGLE_ARROW"
     mech_empty.empty_display_size = 0.35
     mech_empty.location = MECHANIC_ROOT_POS
     link_exclusively(mech_empty, char_col)
 
-    yaw_keys = [
-        (1,   math.radians(MECHANIC_BASE_YAW_DEG)),
-        (85,  math.radians(MECHANIC_BASE_YAW_DEG + 4.0)),
-        (113, math.radians(32.0)),
-        (155, math.radians(28.0)),
-        (203, math.radians(22.0)),
-        (232, math.radians(56.0)),
-        (240, math.radians(58.0)),
-        (264, math.radians(56.0)),
-    ]
-    for f, rz in yaw_keys:
-        mech_empty.rotation_euler = (0.0, 0.0, rz)
+    for f, pos in MECHANIC_POS_KEYS:
+        mech_empty.location = pos
+        mech_empty.keyframe_insert(data_path="location", frame=f)
+
+    for f, yaw_deg in MECHANIC_YAW_KEYS:
+        mech_empty.rotation_euler = (0.0, 0.0, math.radians(yaw_deg))
         mech_empty.keyframe_insert(data_path="rotation_euler", frame=f)
+
+    _smooth_fcurves(mech_empty)
 
     # 2) Proportional 2.5D Plane (`BASE_WIDTH : BASE_HEIGHT`, origin at Z=0 soles of feet!)
     half_w = CHAR_BILLBOARD_WIDTH * 0.5
@@ -140,8 +147,6 @@ def build_mechanic_character(camera_obj: bpy.types.Object) -> Dict[str, Any]:
     z_top = z_bot + CHAR_BILLBOARD_HEIGHT
 
     bm = bmesh.new()
-    # Face normal points along -Y so `TRACK_NEGATIVE_Y` + `LOCK_Z` faces camera upright:
-    # Viewer's Left = -X (u=0), Viewer's Right = +X (u=1), Bottom = z_bot (v=0), Top = z_top (v=1)
     v0 = bm.verts.new((-half_w, 0.0, z_bot))
     v1 = bm.verts.new((half_w, 0.0, z_bot))
     v2 = bm.verts.new((half_w, 0.0, z_top))

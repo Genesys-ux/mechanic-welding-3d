@@ -1,7 +1,8 @@
 """
 camera_rig.py — Fast-Paced Cinematic 360° Travel & Whip-Zoom Camera System
-Calibrated with comfortable framing distances at Frame 20, 85, 155, and 240
-so the 2.5D billboard character, car fender, and welding sparks NEVER clip!
+Calibrated for the grounded classic car (`Z = 0.0` rear tires, `Z = 0.745m` fender weld
+seam, `0mm` jack stands, `0mm` nozzle-fender contact) across all 12 preview frames so
+the 2.5D billboard character, car fender, jack stands, and sparks NEVER clip!
 """
 
 from __future__ import annotations
@@ -27,10 +28,10 @@ def _smooth_fcurves(id_data: bpy.types.ID) -> None:
 def build_cinematic_camera_rig(scene: bpy.types.Scene) -> Dict[str, bpy.types.Object]:
     """
     Construct the obstacle-free 3D Bezier camera path & focus rig across all 4 Beats:
-      - Beat 1 (1-60):   Wide Workshop Establishing Travel -> Whip-Zoom In (24mm -> 46mm)
-      - Beat 2 (61-110): Overshoot Settle & 3/4 Medium Shot on Mechanic + Car Fender (Frame 85)
-      - Beat 3 (111-205): Punch-In Zoom (46mm -> 56mm) + Dynamic Spark Orbit + Micro Shake (Frame 155)
-      - Beat 4 (206-264): Whip-Zoom Pull-Back (56mm -> 34mm) + Heroic Two-Shot Payoff (Frame 240)
+      - Beat 1 (1-60):   Wide Workshop Establishing Travel -> Whip-Zoom In (24mm -> 42mm)
+      - Beat 2 (61-110): Overshoot Settle & 3/4 Medium Shot on Mechanic + Car Fender (Frames 70, 85, 105)
+      - Beat 3 (111-205): Action Zoom (42mm -> 48mm) + Dynamic Spark Orbit + Micro Shake (Frames 125, 155, 185)
+      - Beat 4 (206-264): Whip-Zoom Pull-Back (48mm -> 33mm) + Heroic Two-Shot Payoff (Frames 210, 240, 260)
     """
     cam_col = get_or_create_collection("Col_Camera_Rig")
 
@@ -41,14 +42,13 @@ def build_cinematic_camera_rig(scene: bpy.types.Scene) -> Dict[str, bpy.types.Ob
     curve_data.path_duration = 100
 
     spline = curve_data.splines.new("BEZIER")
-    # Generous distances (2.3m - 3.6m) prevent any billboard or head clipping!
     path_pts: List[Tuple[float, float, float]] = [
-        (-3.35, -3.10, 1.56),  # [0] u=0.00: Wide back-left workshop bay start (Frame 1)
-        (-2.85, -2.05, 1.40),  # [1] u=0.20: Gliding past tool chest & wrench rack (Frame 20)
-        (-2.38, -0.92, 1.18),  # [2] u=0.42: Whip-zoom arrival in 3/4 front corridor (Frame 60)
-        (-2.35, -0.56, 1.16),  # [3] u=0.55: Clear 3/4 Medium Shot on Mechanic & Fender (Frame 85)
-        (-2.26, -0.95, 1.12),  # [4] u=0.78: Dynamic Spark & Welding Arc Action Orbit (Frame 155)
-        (-2.55, -1.25, 1.18),  # [5] u=1.00: Heroic Pull-Back Two-Shot of Mechanic + Welded Car (Frame 240..264)
+        (-3.35, -3.10, 1.50),  # [0] u=0.00: Wide back-left workshop bay start (Frame 1)
+        (-2.85, -2.05, 1.36),  # [1] u=0.20: Gliding past tool chest & wrench rack (Frame 20)
+        (-2.42, -0.96, 1.14),  # [2] u=0.42: Whip-zoom arrival in 3/4 front corridor (Frame 60)
+        (-2.38, -0.60, 1.12),  # [3] u=0.55: Clear 3/4 Medium Shot on Mechanic & Fender (Frame 85)
+        (-2.30, -0.96, 1.08),  # [4] u=0.78: Dynamic Spark & Welding Arc Action Orbit (Frame 155)
+        (-2.58, -1.28, 1.15),  # [5] u=1.00: Heroic Pull-Back Two-Shot of Mechanic + Welded Car (Frames 240..264)
     ]
     spline.bezier_points.add(len(path_pts) - 1)
     for idx, pt in enumerate(path_pts):
@@ -72,16 +72,16 @@ def build_cinematic_camera_rig(scene: bpy.types.Scene) -> Dict[str, bpy.types.Ob
 
     dolly_offset_keys = [
         (1,   0.000),
-        (20,  0.205),  # Frame 20: Wide travel past tools & car
-        (58,  0.420),  # Whip-zoom arrival
-        (66,  0.452),  # Subtle overshoot settle
-        (85,  0.548),  # Frame 85: 3/4 Medium Shot (goggles pull + fender)
+        (20,  0.205),
+        (58,  0.420),
+        (66,  0.452),
+        (85,  0.548),
         (108, 0.590),
-        (120, 0.655),  # Punch-in orbit start
-        (155, 0.778),  # Frame 155: Sweeping past flying sparks & blue-white arc
+        (120, 0.655),
+        (155, 0.778),
         (203, 0.858),
-        (226, 0.985),  # Whip-pullback as torch lifts
-        (240, 0.995),  # Frame 240: Heroic Payoff Two-Shot
+        (226, 0.985),
+        (240, 0.995),
         (264, 1.000),
     ]
     for f, u_val in dolly_offset_keys:
@@ -94,17 +94,17 @@ def build_cinematic_camera_rig(scene: bpy.types.Scene) -> Dict[str, bpy.types.Ob
     link_exclusively(target, cam_col)
 
     target_keys = [
-        (1,   (-0.32, -0.48, 0.90)),
-        (20,  (-0.26, -0.58, 0.88)),
-        (58,  (-0.18, -0.78, 0.98)),
-        (85,  (-0.16, -0.80, 0.98)),  # Centered comfortably on Mechanic upper torso/head + fender
-        (106, (-0.20, -0.72, 0.98)),
-        (116, (-0.22, -0.70, 1.00)),
-        (155, (-0.18, -0.70, 1.00)),  # Captures full head + goggles + torch + sparks without edge clipping!
-        (203, (-0.14, -0.70, 0.98)),
-        (226, (-0.18, -0.74, 0.92)),
-        (240, (-0.18, -0.74, 0.92)),
-        (264, (-0.16, -0.72, 0.92)),
+        (1,   (-0.18, -0.45, 0.80)),
+        (20,  (-0.20, -0.55, 0.82)),
+        (58,  (-0.22, -0.70, 0.90)),
+        (85,  (-0.22, -0.72, 0.92)),
+        (106, (-0.26, -0.68, 0.91)),
+        (116, (-0.28, -0.64, 0.92)),
+        (155, (-0.22, -0.64, 0.92)),
+        (203, (-0.12, -0.64, 0.91)),
+        (226, (-0.16, -0.68, 0.85)),
+        (240, (-0.16, -0.68, 0.85)),
+        (264, (-0.16, -0.66, 0.85)),
     ]
     for f, t_pos in target_keys:
         target.location = t_pos
@@ -135,17 +135,17 @@ def build_cinematic_camera_rig(scene: bpy.types.Scene) -> Dict[str, bpy.types.Ob
     lens_keys = [
         (1,   24.0),
         (20,  25.0),
-        (42,  28.0),
-        (60,  45.0),  # Beat 1 -> 2 Whip-Zoom In
-        (68,  47.0),
-        (85,  44.0),  # Beat 2 Crisp Non-Clipping 3/4 Medium Shot
-        (107, 45.0),
-        (119, 56.0),  # Beat 3 Punch-In Action Zoom
-        (155, 54.0),  # Frame 155: Full head, goggles, fender seam & sparks all inside frame!
-        (204, 55.0),
-        (224, 34.0),  # Beat 4 Fast Whip-Zoom Pull-Back
-        (240, 34.0),
-        (264, 35.0),
+        (45,  28.5),
+        (60,  42.0),
+        (68,  44.0),
+        (85,  42.0),
+        (107, 43.0),
+        (119, 48.0),
+        (155, 48.0),
+        (204, 48.0),
+        (224, 33.0),
+        (240, 33.0),
+        (264, 34.0),
     ]
     for f, fl in lens_keys:
         cam_data.lens = fl
@@ -157,9 +157,9 @@ def build_cinematic_camera_rig(scene: bpy.types.Scene) -> Dict[str, bpy.types.Ob
         (85,  (0.000, 0.0,  0.000)),
         (113, (0.000, 0.0,  0.015)),
         (203, (0.000, 0.0, -0.012)),
-        (226, (0.015, 0.0,  0.014)),
-        (240, (0.012, 0.0,  0.010)),
-        (264, (0.010, 0.0,  0.006)),
+        (226, (0.012, 0.0,  0.012)),
+        (240, (0.010, 0.0,  0.008)),
+        (264, (0.008, 0.0,  0.005)),
     ]
     for f, r_eul in roll_keys:
         cam_obj.rotation_euler = r_eul
@@ -173,12 +173,12 @@ def build_cinematic_camera_rig(scene: bpy.types.Scene) -> Dict[str, bpy.types.Ob
     add_restricted_noise_modifier(
         cam_obj, data_path="rotation_euler",
         frame_start=float(WELD_ARC_START), frame_end=float(WELD_ARC_END),
-        scale=1.6, strength=0.0045, phase=3.1, index=0
+        scale=1.6, strength=0.0042, phase=3.1, index=0
     )
     add_restricted_noise_modifier(
         cam_obj, data_path="rotation_euler",
         frame_start=float(WELD_ARC_START), frame_end=float(WELD_ARC_END),
-        scale=1.9, strength=0.0038, phase=14.8, index=2
+        scale=1.9, strength=0.0035, phase=14.8, index=2
     )
 
     scene.frame_set(FRAME_START)

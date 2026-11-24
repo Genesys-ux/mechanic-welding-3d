@@ -24,15 +24,17 @@ if str(SCRIPT_DIR) not in sys.path:
 from camera_rig import build_cinematic_camera_rig  # noqa: E402
 from config import (  # noqa: E402
     CAMERA_SYNC_PATH,
-    DIAGNOSTIC_FRAMES,
+    DEBUG_FRAMES,
     FPS,
     FRAME_END,
     FRAME_START,
-    MECHANIC_BASE_YAW_DEG,
+    MECHANIC_POS_KEYS,
     MECHANIC_ROOT_POS,
+    MECHANIC_YAW_KEYS,
     OUTPUT_DIR,
 )
 from env_props import get_or_create_collection, link_exclusively  # noqa: E402
+from vfx_lighting import _get_action_fcurves  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,12 +48,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def create_animated_mechanic_empty() -> bpy.types.Object:
-    """
-    Create `Empty_Mechanic` at MECHANIC_ROOT_POS with subtle natural torso yaw across beats:
-      - Beats 1 & 2: angled toward front-left fender (+36 deg)
-      - Beat 3: follows weld pass along fender (+32 -> +22 deg)
-      - Beat 4: turns proudly toward the 3/4 camera (+58 deg) for a clear confident smile!
-    """
+    """Create `Empty_Mechanic` with identical position & yaw keyframes as `character_rig.py`."""
     col = get_or_create_collection("Col_Mechanic_Character")
     emp = bpy.data.objects.new("Empty_Mechanic", None)
     emp.empty_display_type = "SINGLE_ARROW"
@@ -59,19 +56,20 @@ def create_animated_mechanic_empty() -> bpy.types.Object:
     emp.location = MECHANIC_ROOT_POS
     link_exclusively(emp, col)
 
-    yaw_keys = [
-        (1,   math.radians(MECHANIC_BASE_YAW_DEG)),
-        (85,  math.radians(MECHANIC_BASE_YAW_DEG + 4.0)),
-        (113, math.radians(32.0)),
-        (155, math.radians(28.0)),
-        (203, math.radians(22.0)),
-        (232, math.radians(56.0)),
-        (240, math.radians(58.0)),
-        (264, math.radians(56.0)),
-    ]
-    for f, rz in yaw_keys:
-        emp.rotation_euler = (0.0, 0.0, rz)
+    for f, pos in MECHANIC_POS_KEYS:
+        emp.location = pos
+        emp.keyframe_insert(data_path="location", frame=f)
+
+    for f, yaw_deg in MECHANIC_YAW_KEYS:
+        emp.rotation_euler = (0.0, 0.0, math.radians(yaw_deg))
         emp.keyframe_insert(data_path="rotation_euler", frame=f)
+
+    for fc in _get_action_fcurves(emp):
+        for kp in fc.keyframe_points:
+            kp.interpolation = "BEZIER"
+            kp.handle_left_type = "AUTO_CLAMPED"
+            kp.handle_right_type = "AUTO_CLAMPED"
+        fc.update()
 
     return emp
 
@@ -118,7 +116,7 @@ def main() -> None:
     cam_obj = cam_data["camera"]
 
     if args.mode == "debug":
-        target_frames: List[int] = list(DIAGNOSTIC_FRAMES)
+        target_frames: List[int] = list(DEBUG_FRAMES)
     else:
         target_frames = list(range(args.start, args.end + 1))
 
@@ -148,8 +146,8 @@ def main() -> None:
     }
     CAMERA_SYNC_PATH.write_text(json.dumps(sync_doc, indent=2), encoding="utf-8")
     print(f"[CameraSync] Exported {len(target_frames)} frame angles -> {CAMERA_SYNC_PATH}")
-    for fk in list(frames_payload.keys())[:6]:
-        print(f"  Frame {fk}: angle={frames_payload[fk]['angle']}°")
+    for fk in list(frames_payload.keys()):
+        print(f"  Frame {fk:>3s}: angle={frames_payload[fk]['angle']}°")
 
 
 if __name__ == "__main__":
