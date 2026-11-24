@@ -21,7 +21,164 @@ env:
   BLENDER_DIR: "/tmp/blender-4.2.16-linux-x64"
 
 jobs:
-  render-pipeline:
+  render-debug-shard:
+    if: ${{ inputs.mode == 'debug' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - shard: 1
+            frames: "1,20,45,70"
+            save_blend: "false"
+          - shard: 2
+            frames: "85,105,125,155"
+            save_blend: "true"
+          - shard: 3
+            frames: "185,210,240,260"
+            save_blend: "false"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12 & install resvg-py + pillow
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python 2.5D rasterizer dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install resvg-py pillow
+
+      - name: Install headless OpenGL (Xvfb + Mesa), Fonts & FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            xvfb libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libxi6 \
+            libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libice6 \
+            libglu1-mesa ffmpeg xz-utils fonts-dejavu-core
+
+      - name: Cache Blender ${{ env.BLENDER_VERSION }} LTS
+        id: cache-blender
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BLENDER_DIR }}
+          key: blender-linux-${{ env.BLENDER_VERSION }}
+
+      - name: Download & extract Blender ${{ env.BLENDER_VERSION }} LTS
+        if: steps.cache-blender.outputs.cache-hit != 'true'
+        run: |
+          FILE="blender-${{ env.BLENDER_VERSION }}-linux-x64.tar.xz"
+          MIRRORS=(
+            "https://ftp.nluug.nl/pub/graphics/blender/release/Blender${{ env.BLENDER_SERIES }}/${FILE}"
+            "https://mirrors.ocf.berkeley.edu/blender/release/Blender${{ env.BLENDER_SERIES }}/${FILE}"
+            "https://mirror.clarkson.edu/blender/release/Blender${{ env.BLENDER_SERIES }}/${FILE}"
+            "https://download.blender.org/release/Blender${{ env.BLENDER_SERIES }}/${FILE}"
+          )
+          ok=0
+          for URL in "${MIRRORS[@]}"; do
+            echo "Trying mirror: $URL"
+            if curl -fSL --retry 3 --retry-delay 4 -A "Mozilla/5.0" "$URL" -o "/tmp/blender.tar.xz"; then
+              ok=1
+              break
+            fi
+          done
+          [ "$ok" -eq 1 ] || exit 1
+          tar -xf "/tmp/blender.tar.xz" -C "/tmp"
+          rm -f "/tmp/blender.tar.xz"
+
+      - name: "Stage 1: Export Camera Sync (Shard ${{ matrix.shard }}: ${{ matrix.frames }})"
+        run: |
+          rm -rf output/char_frames output/debug_frames
+          "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
+            --python export_camera_sync.py -- --mode debug --frames "${{ matrix.frames }}"
+
+      - name: "Stage 2: Generate Decals & Native 2.5D Sprites (Shard ${{ matrix.shard }})"
+        run: |
+          python generate_prop_decals.py
+          python render_char_25d.py
+
+      - name: "Stage 3: Assemble Scene & Render 4 Frames (Shard ${{ matrix.shard }})"
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: "llvmpipe"
+          MESA_GL_VERSION_OVERRIDE: "4.5"
+        run: |
+          EXTRA_FLAG=""
+          if [ "${{ matrix.save_blend }}" != "true" ]; then
+            EXTRA_FLAG="--skip-blend-save"
+          fi
+          xvfb-run -a -s "-screen 0 1280x1024x24" \
+            "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
+            --python main.py -- --mode debug --frames "${{ matrix.frames }}" --fast-ci ${EXTRA_FLAG}
+          mv output/verification_report.json "output/verification_report_shard_${{ matrix.shard }}.json"
+          ls -lh output/debug_frames/*.png
+
+      - name: Upload Shard ${{ matrix.shard }} Output
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-shard-${{ matrix.shard }}
+          path: |
+            output/debug_frames/*.png
+            output/verification_report_shard_${{ matrix.shard }}.json
+            output/mechanic_scene.blend
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-debug-artifact:
+    if: ${{ inputs.mode == 'debug' }}
+    needs: render-debug-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all 3 debug shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: debug-shard-*
+          merge-multiple: true
+          path: merged_output
+
+      - name: Verify all 12 preview frames & merge verification report
+        run: |
+          ls -lh merged_output/debug_frames/*.png
+          COUNT=$(ls -1 merged_output/debug_frames/debug_frame_*.png | wc -l)
+          echo "Total merged debug frames: ${COUNT}"
+          [ "${COUNT}" -eq 12 ] || exit 1
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("merged_output")
+          merged = {"debug_frames": [], "jack_contacts": {}, "ground_clamp_contact": [], "frames": {}, "all_checks_passed": True, "warnings": []}
+          for p in sorted(root.glob("verification_report_shard_*.json")):
+              d = json.loads(p.read_text(encoding="utf-8"))
+              merged["debug_frames"].extend(d.get("debug_frames", []))
+              if d.get("jack_contacts"):
+                  merged["jack_contacts"] = d["jack_contacts"]
+              if d.get("ground_clamp_contact"):
+                  merged["ground_clamp_contact"] = d["ground_clamp_contact"]
+              merged["frames"].update(d.get("frames", {}))
+              merged["warnings"].extend(d.get("warnings", []))
+              if not d.get("all_checks_passed", True):
+                  merged["all_checks_passed"] = False
+          merged["debug_frames"] = sorted(merged["debug_frames"])
+          (root / "verification_report.json").write_text(json.dumps(merged, indent=2), encoding="utf-8")
+          print(json.dumps(merged, indent=2))
+          PY
+
+      - name: Upload Unified 12-Frame Debug Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mechanic-welding-debug-output
+          path: |
+            merged_output/debug_frames/*.png
+            merged_output/verification_report.json
+            merged_output/mechanic_scene.blend
+          if-no-files-found: error
+          retention-days: 14
+
+  render-final:
+    if: ${{ inputs.mode == 'final' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -78,14 +235,14 @@ jobs:
         run: |
           rm -rf output/char_frames output/debug_frames
           "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
-            --python export_camera_sync.py -- --mode "${{ inputs.mode }}"
+            --python export_camera_sync.py -- --mode final
 
       - name: "Stage 2: Generate 2D Prop/Wall Decals & Native 2.5D Sprites (Python)"
         run: |
           python generate_prop_decals.py
           python render_char_25d.py
 
-      - name: "Stage 3: Assemble 3D+2.5D Scene & Render (${{ inputs.mode }})"
+      - name: "Stage 3: Assemble 3D+2.5D Scene & Render (final)"
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: "llvmpipe"
@@ -93,16 +250,12 @@ jobs:
         run: |
           xvfb-run -a -s "-screen 0 1280x1024x24" \
             "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
-            --python main.py -- --mode "${{ inputs.mode }}" --fast-ci
-          ls -lh output/debug_frames/*.png
-          COUNT=$(ls -1 output/debug_frames/debug_frame_*.png | wc -l)
-          echo "Rendered debug frame count: ${COUNT}"
-          [ "${COUNT}" -eq 12 ] || exit 1
+            --python main.py -- --mode final --fast-ci
 
-      - name: Upload Render Output Artifact (${{ inputs.mode }})
+      - name: Upload Render Output Artifact (final)
         uses: actions/upload-artifact@v4
         with:
-          name: mechanic-welding-${{ inputs.mode }}-output
+          name: mechanic-welding-final-output
           path: |
             output/debug_frames/*.png
             output/verification_report.json

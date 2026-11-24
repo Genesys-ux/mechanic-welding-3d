@@ -56,12 +56,14 @@ def parse_cli_args() -> argparse.Namespace:
     extra = argv[argv.index("--") + 1 :] if "--" in argv else []
     parser = argparse.ArgumentParser(description="Mechanic Welding 2.5D/3D Hybrid Pipeline")
     parser.add_argument("--mode", choices=["debug", "final", "shard"], default="debug")
+    parser.add_argument("--frames", type=str, default="", help="Optional comma-separated debug frame list")
     parser.add_argument("--start", type=int, default=FRAME_START)
     parser.add_argument("--end", type=int, default=FRAME_END)
     parser.add_argument("--width", type=int, default=RES_X)
     parser.add_argument("--height", type=int, default=RES_Y)
     parser.add_argument("--samples", type=int, default=8)
     parser.add_argument("--fast-ci", action="store_true", help="Optimize EEVEE Next for headless CI")
+    parser.add_argument("--skip-blend-save", action="store_true", help="Skip saving .blend on secondary shards")
     parser.add_argument("--frames-dir", type=str, default=str(OUTPUT_DIR / "frames"))
     return parser.parse_args(extra)
 
@@ -103,11 +105,11 @@ def configure_render_and_compositor(
     if hasattr(eevee, "use_shadows"):
         eevee.use_shadows = True
     if hasattr(eevee, "shadow_resolution_scale"):
-        eevee.shadow_resolution_scale = 0.55 if fast_ci else 0.85
+        eevee.shadow_resolution_scale = 0.50 if fast_ci else 0.85
     if hasattr(eevee, "shadow_ray_count"):
         eevee.shadow_ray_count = 1
     if hasattr(eevee, "shadow_step_count"):
-        eevee.shadow_step_count = 5
+        eevee.shadow_step_count = 3 if fast_ci else 5
 
     scene.render.resolution_x = width
     scene.render.resolution_y = height
@@ -158,10 +160,11 @@ def run_automated_diagnostics(
     spark_streaks: List[bpy.types.Object],
     cam_obj: bpy.types.Object,
     env_data: Dict[str, Any],
+    target_frames: List[int],
 ) -> Dict[str, Any]:
-    """Verify framing, 0-gap jack stands, torch-seam contact, and spark visibility across all 12 DEBUG_FRAMES."""
+    """Verify framing, 0-gap jack stands, torch-seam contact, and spark visibility across target debug frames."""
     report: Dict[str, Any] = {
-        "debug_frames": list(DEBUG_FRAMES),
+        "debug_frames": list(target_frames),
         "jack_contacts": env_data.get("jack_contacts", {}),
         "ground_clamp_contact": [round(v, 4) for v in env_data["ground_clamp_contact"]] if "ground_clamp_contact" in env_data else [],
         "frames": {},
@@ -169,7 +172,7 @@ def run_automated_diagnostics(
         "warnings": [],
     }
 
-    for f in DEBUG_FRAMES:
+    for f in target_frames:
         scene.frame_set(f)
         bpy.context.view_layer.update()
         deps = bpy.context.evaluated_depsgraph_get()
@@ -222,18 +225,28 @@ def run_automated_diagnostics(
     return report
 
 
-def render_diagnostic_frames(scene: bpy.types.Scene, fast_ci: bool = False) -> None:
+def render_diagnostic_frames(
+    scene: bpy.types.Scene,
+    target_frames: List[int],
+    fast_ci: bool = False,
+) -> None:
     DEBUG_FRAMES_DIR.mkdir(parents=True, exist_ok=True)
-    configure_render_and_compositor(scene, DEBUG_RES_X, DEBUG_RES_Y, samples=6, fast_ci=fast_ci)
+    configure_render_and_compositor(
+        scene,
+        DEBUG_RES_X,
+        DEBUG_RES_Y,
+        samples=4 if fast_ci else 6,
+        fast_ci=fast_ci,
+    )
     scene.render.image_settings.file_format = "PNG"
     scene.render.image_settings.color_mode = "RGB"
 
-    for idx, f in enumerate(DEBUG_FRAMES, start=1):
+    for idx, f in enumerate(target_frames, start=1):
         scene.frame_set(f)
         bpy.context.view_layer.update()
         out_png = DEBUG_FRAMES_DIR / f"debug_frame_{f:04d}.png"
         scene.render.filepath = str(out_png)
-        print(f"[Debug Render {idx}/{len(DEBUG_FRAMES)}] Rendering Frame {f} -> {out_png} ...", flush=True)
+        print(f"[Debug Render {idx}/{len(target_frames)}] Rendering Frame {f} -> {out_png} ...", flush=True)
         bpy.ops.render.render(write_still=True)
 
 
@@ -303,8 +316,14 @@ def main() -> None:
         cable_mid_sag=env_data["cable_mid_sag"],
     )
 
+    target_debug_frames = (
+        [int(x.strip()) for x in args.frames.split(",") if x.strip()]
+        if args.frames.strip()
+        else list(DEBUG_FRAMES)
+    )
+
     configure_render_and_compositor(scene, RES_X, RES_Y, samples=args.samples, fast_ci=args.fast_ci)
-    scene.frame_set(155)
+    scene.frame_set(target_debug_frames[0])
     bpy.context.view_layer.update()
 
     if args.mode in ("debug", "final"):
@@ -315,15 +334,17 @@ def main() -> None:
             spark_streaks=vfx_data["spark_streaks"],
             cam_obj=cam_data["camera"],
             env_data=env_data,
+            target_frames=target_debug_frames,
         )
-        render_diagnostic_frames(scene, fast_ci=args.fast_ci)
+        render_diagnostic_frames(scene, target_frames=target_debug_frames, fast_ci=args.fast_ci)
 
-        configure_render_and_compositor(scene, RES_X, RES_Y, samples=args.samples, fast_ci=args.fast_ci)
-        scene.frame_set(155)
-        bpy.context.view_layer.update()
-        BLEND_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        bpy.ops.wm.save_as_mainfile(filepath=str(BLEND_FILE_PATH), compress=True)
-        print(f"[Saved] Blender scene saved to: {BLEND_FILE_PATH}")
+        if not args.skip_blend_save:
+            configure_render_and_compositor(scene, RES_X, RES_Y, samples=args.samples, fast_ci=args.fast_ci)
+            scene.frame_set(target_debug_frames[-1])
+            bpy.context.view_layer.update()
+            BLEND_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            bpy.ops.wm.save_as_mainfile(filepath=str(BLEND_FILE_PATH), compress=True)
+            print(f"[Saved] Blender scene saved to: {BLEND_FILE_PATH}")
 
     if args.mode == "shard":
         render_shard_png_sequence(scene, args)

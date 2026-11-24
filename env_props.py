@@ -709,23 +709,36 @@ def _import_and_setup_reference_car(col: bpy.types.Collection) -> Dict[str, Any]
     bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
 
-    # Sub-tire pedestal check: identify wheel meshes via skinning vertex groups (`FL_2`, `FR_0`, `RL_3`, `RR_1`)
+    # Identify wheel meshes accurately via active non-zero vertex-group weight (`FL_2`, `FR_0`, `RL_3`, `RR_1`)
+    def _dominant_vg_name(mesh_obj: bpy.types.Object) -> str:
+        if mesh_obj.type != "MESH" or not mesh_obj.vertex_groups or len(mesh_obj.data.vertices) == 0:
+            return ""
+        best_idx = -1
+        best_w = 0.0
+        for g in mesh_obj.data.vertices[0].groups:
+            if g.weight > best_w:
+                best_w = g.weight
+                best_idx = g.group
+        if best_idx >= 0 and best_idx < len(mesh_obj.vertex_groups):
+            return mesh_obj.vertex_groups[best_idx].name
+        return ""
+
     wheel_vg_map: Dict[str, bpy.types.Object] = {}
     for o in imported:
         if o.type != "MESH":
             continue
-        vg_names = {vg.name.upper() for vg in o.vertex_groups}
+        dom_vg = _dominant_vg_name(o).upper()
         for tag, key in (("FL", "FL_2"), ("FR", "FR_0"), ("RL", "RL_3"), ("RR", "RR_1")):
-            if key in vg_names:
+            if dom_vg == key:
                 wheel_vg_map[tag] = o
 
-    if wheel_vg_map:
+    if len(wheel_vg_map) == 4:
         w_bmin, _ = _eval_world_bbox(list(wheel_vg_map.values()), deps)
         for o in list(imported):
             if o.type != "MESH" or o in wheel_vg_map.values():
                 continue
-            omin, omax = _eval_world_bbox([o], deps)
-            if omin.z < w_bmin.z - 0.03:
+            omin, _ = _eval_world_bbox([o], deps)
+            if omin.z < w_bmin.z - 0.05:
                 removed_names.append(f"{o.name}(sub-wheel-base z={omin.z:.3f})")
                 imported.remove(o)
                 md = o.data
@@ -736,11 +749,10 @@ def _import_and_setup_reference_car(col: bpy.types.Collection) -> Dict[str, Any]
         deps = bpy.context.evaluated_depsgraph_get()
 
     mesh_objs = [o for o in imported if o.type == "MESH"]
-    print(f"[CarGLB Inspect] Kept {len(mesh_objs)} clean car meshes; Removed helpers/pedestals: {removed_names}")
+    print(f"[CarGLB Inspect] Kept {len(mesh_objs)} clean car meshes; Wheels={sorted(wheel_vg_map.keys())}; Removed helpers/pedestals: {removed_names}")
     for mo in mesh_objs:
         mats_s = [m.name for m in mo.data.materials if m]
-        vgs_s = [vg.name for vg in mo.vertex_groups]
-        print(f"  [CarGLB Mesh] {mo.name}: verts={len(mo.data.vertices)}, mats={mats_s}, vgs={vgs_s}")
+        print(f"  [CarGLB Mesh] {mo.name}: verts={len(mo.data.vertices)}, mats={mats_s}, dom_vg={_dominant_vg_name(mo)}")
 
     # 1) Auto-orient Car so Front Headlights face `-X`
     front_meshes = [o for o in mesh_objs if any("lights_front" in (m.name.lower() if m else "") for m in o.data.materials)]
@@ -767,7 +779,7 @@ def _import_and_setup_reference_car(col: bpy.types.Collection) -> Dict[str, Any]
 
     # 3) Recompute exact world bound_box of clean car meshes, wheels, and main body shell
     b_min, b_max = _eval_world_bbox(mesh_objs, deps)
-    main_body_meshes = [o for o in mesh_objs if any(vg.name == "Root_10" for vg in o.vertex_groups)] or mesh_objs
+    main_body_meshes = [o for o in mesh_objs if _dominant_vg_name(o) == "Root_10"] or mesh_objs
     body_min, _ = _eval_world_bbox(main_body_meshes, deps)
 
     fl_wheel = wheel_vg_map.get("FL")
@@ -815,8 +827,6 @@ def _import_and_setup_reference_car(col: bpy.types.Collection) -> Dict[str, Any]
             apply_cel_outline(o, thickness=0.0042, use_even_offset=False)
             if o not in wheel_set:
                 solid_body_meshes.append(o)
-        if len(o.data.vertices) > 4000 and o not in wheel_set:
-            _add_collision_modifier(o, damping=0.35, friction=0.22)
 
     b_min_f, b_max_f = _eval_world_bbox(mesh_objs, deps)
     fl_min_f, fl_max_f = _eval_world_bbox([fl_wheel], deps) if fl_wheel else (Vector((-0.58, -0.42, 0.16)), Vector((-0.05, -0.22, 0.69)))

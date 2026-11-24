@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     extra = argv[argv.index("--") + 1 :] if "--" in argv else []
     parser = argparse.ArgumentParser(description="Export 360° Camera-to-Mechanic Sync JSON")
     parser.add_argument("--mode", choices=["debug", "final"], default="debug")
+    parser.add_argument("--frames", type=str, default="", help="Optional comma-separated frame list")
     parser.add_argument("--start", type=int, default=FRAME_START)
     parser.add_argument("--end", type=int, default=FRAME_END)
     return parser.parse_args(extra)
@@ -115,8 +116,10 @@ def main() -> None:
     cam_data = build_cinematic_camera_rig(scene)
     cam_obj = cam_data["camera"]
 
-    if args.mode == "debug":
-        target_frames: List[int] = list(DEBUG_FRAMES)
+    if args.frames.strip():
+        target_frames: List[int] = [int(x.strip()) for x in args.frames.split(",") if x.strip()]
+    elif args.mode == "debug":
+        target_frames = list(DEBUG_FRAMES)
     else:
         target_frames = list(range(args.start, args.end + 1))
 
