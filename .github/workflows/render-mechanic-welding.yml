@@ -177,9 +177,26 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  render-final:
+  render-final-shard:
     if: ${{ inputs.mode == 'final' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { shard: 1,  start: 1,   end: 22,  save_blend: "true"  }
+          - { shard: 2,  start: 23,  end: 44,  save_blend: "false" }
+          - { shard: 3,  start: 45,  end: 66,  save_blend: "false" }
+          - { shard: 4,  start: 67,  end: 88,  save_blend: "false" }
+          - { shard: 5,  start: 89,  end: 110, save_blend: "false" }
+          - { shard: 6,  start: 111, end: 132, save_blend: "false" }
+          - { shard: 7,  start: 133, end: 154, save_blend: "false" }
+          - { shard: 8,  start: 155, end: 176, save_blend: "false" }
+          - { shard: 9,  start: 177, end: 198, save_blend: "false" }
+          - { shard: 10, start: 199, end: 220, save_blend: "false" }
+          - { shard: 11, start: 221, end: 242, save_blend: "false" }
+          - { shard: 12, start: 243, end: 264, save_blend: "false" }
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -194,13 +211,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install resvg-py pillow
 
-      - name: Install headless OpenGL (Xvfb + Mesa), Fonts & FFmpeg
+      - name: Install headless OpenGL (Xvfb + Mesa) & Fonts
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             xvfb libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libxi6 \
             libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libice6 \
-            libglu1-mesa ffmpeg xz-utils fonts-dejavu-core
+            libglu1-mesa xz-utils fonts-dejavu-core
 
       - name: Cache Blender ${{ env.BLENDER_VERSION }} LTS
         id: cache-blender
@@ -231,35 +248,80 @@ jobs:
           tar -xf "/tmp/blender.tar.xz" -C "/tmp"
           rm -f "/tmp/blender.tar.xz"
 
-      - name: "Stage 1: Export 360° Camera-to-Mechanic Sync (Blender)"
+      - name: "Stage 1: Export Camera Sync (Final Shard ${{ matrix.shard }}: ${{ matrix.start }}..${{ matrix.end }})"
         run: |
-          rm -rf output/char_frames output/debug_frames
+          rm -rf output/char_frames output/frames
           "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
-            --python export_camera_sync.py -- --mode final
+            --python export_camera_sync.py -- --mode final --start "${{ matrix.start }}" --end "${{ matrix.end }}"
 
-      - name: "Stage 2: Generate 2D Prop/Wall Decals & Native 2.5D Sprites (Python)"
+      - name: "Stage 2: Generate Decals & 2.5D Sprites (Final Shard ${{ matrix.shard }})"
         run: |
           python generate_prop_decals.py
           python render_char_25d.py
 
-      - name: "Stage 3: Assemble 3D+2.5D Scene & Render (final)"
+      - name: "Stage 3: Render 1080p PNG Sequence (Final Shard ${{ matrix.shard }}: ${{ matrix.start }}..${{ matrix.end }})"
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: "llvmpipe"
           MESA_GL_VERSION_OVERRIDE: "4.5"
         run: |
-          xvfb-run -a -s "-screen 0 1280x1024x24" \
+          BLEND_FLAG=""
+          if [ "${{ matrix.save_blend }}" = "true" ]; then
+            BLEND_FLAG="--save-blend"
+          fi
+          xvfb-run -a -s "-screen 0 1920x1080x24" \
             "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
-            --python main.py -- --mode final --fast-ci
+            --python main.py -- --mode shard --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+            --width 1920 --height 1080 --samples 4 --fast-ci --frames-dir output/frames ${BLEND_FLAG}
+          ls -1 output/frames/frame_*.png | wc -l
 
-      - name: Upload Render Output Artifact (final)
+      - name: Upload Final Shard ${{ matrix.shard }} PNGs
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-shard-${{ matrix.shard }}
+          path: |
+            output/frames/*.png
+            output/mechanic_scene.blend
+          if-no-files-found: error
+          retention-days: 1
+
+  encode-final-mp4:
+    if: ${{ inputs.mode == 'final' }}
+    needs: render-final-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg
+
+      - name: Download all 12 final render shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: final-shard-*
+          merge-multiple: true
+          path: merged_final
+
+      - name: Verify all 264 frames & encode 1080p H.264 MP4 (24 FPS)
+        run: |
+          COUNT=$(ls -1 merged_final/frames/frame_*.png | wc -l)
+          echo "Total rendered frames: ${COUNT}"
+          [ "${COUNT}" -eq 264 ] || exit 1
+          mkdir -p final_out
+          ffmpeg -y -framerate 24 -start_number 1 -i merged_final/frames/frame_%04d.png \
+            -c:v libx264 -pix_fmt yuv420p -crf 18 -preset slow -movflags +faststart \
+            final_out/mechanic_welding_final.mp4
+          if [ -f merged_final/mechanic_scene.blend ]; then
+            cp merged_final/mechanic_scene.blend final_out/mechanic_scene.blend
+          fi
+          ls -lh final_out/
+
+      - name: Upload Final 1080p MP4 Artifact
         uses: actions/upload-artifact@v4
         with:
           name: mechanic-welding-final-output
           path: |
-            output/debug_frames/*.png
-            output/verification_report.json
-            output/mechanic_scene.blend
-            output/mechanic_welding_final.mp4
+            final_out/mechanic_welding_final.mp4
+            final_out/mechanic_scene.blend
           if-no-files-found: error
           retention-days: 14

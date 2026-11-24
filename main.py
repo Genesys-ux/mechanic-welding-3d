@@ -64,6 +64,7 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=8)
     parser.add_argument("--fast-ci", action="store_true", help="Optimize EEVEE Next for headless CI")
     parser.add_argument("--skip-blend-save", action="store_true", help="Skip saving .blend on secondary shards")
+    parser.add_argument("--save-blend", action="store_true", help="Also save .blend when running in shard mode")
     parser.add_argument("--frames-dir", type=str, default=str(OUTPUT_DIR / "frames"))
     return parser.parse_args(extra)
 
@@ -323,7 +324,7 @@ def main() -> None:
     )
 
     configure_render_and_compositor(scene, RES_X, RES_Y, samples=args.samples, fast_ci=args.fast_ci)
-    scene.frame_set(target_debug_frames[0])
+    scene.frame_set(args.start if args.mode == "shard" else target_debug_frames[0])
     bpy.context.view_layer.update()
 
     if args.mode in ("debug", "final"):
@@ -348,6 +349,10 @@ def main() -> None:
 
     if args.mode == "shard":
         render_shard_png_sequence(scene, args)
+        if args.save_blend:
+            BLEND_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            bpy.ops.wm.save_as_mainfile(filepath=str(BLEND_FILE_PATH), compress=True)
+            print(f"[Saved] Blender scene saved to: {BLEND_FILE_PATH}")
     elif args.mode == "final":
         render_full_mp4_animation(scene, args)
 
