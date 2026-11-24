@@ -1,11 +1,10 @@
 """
 config.py — Global Configuration, Frame Timing, Coordinates & Cel-Shade Palette
-Project: Young Mechanic Welding 3D Cel-Shaded Short Animation
+Project: Young Mechanic Welding 3D Cel-Shaded Short Animation (2.5D Dynamic Billboard)
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -16,7 +15,9 @@ PROJECT_ROOT: Path = Path(__file__).resolve().parent
 CHARACTER_SCRIPT_PATH: Path = PROJECT_ROOT / "tr" / "mekanik_muda_character.py"
 OUTPUT_DIR: Path = PROJECT_ROOT / "output"
 DEBUG_FRAMES_DIR: Path = OUTPUT_DIR / "debug_frames"
-GENERATED_TEX_DIR: Path = OUTPUT_DIR / "generated_textures"
+CHAR_FRAMES_DIR: Path = OUTPUT_DIR / "char_frames"
+CAMERA_SYNC_PATH: Path = OUTPUT_DIR / "camera_sync.json"
+CHAR_HAND_SYNC_PATH: Path = OUTPUT_DIR / "char_hand_sync.json"
 BLEND_FILE_PATH: Path = OUTPUT_DIR / "mechanic_scene.blend"
 FINAL_VIDEO_PATH: Path = OUTPUT_DIR / "mechanic_welding_final.mp4"
 
@@ -37,6 +38,18 @@ DIAGNOSTIC_FRAMES: Tuple[int, ...] = (20, 85, 155, 240)
 RANDOM_SEED: int = 42
 
 # ==============================================================================
+# 2.5D CHARACTER BILLBOARD PROPORTIONS (Matches 240x520 MekanikMudaCharacter)
+# ==============================================================================
+CHAR_BASE_WIDTH_PX: int = 240
+CHAR_BASE_HEIGHT_PX: int = 520
+CHAR_FEET_Y_PX: float = 476.0  # Soles of feet in 240x520 canvas
+
+CHAR_BILLBOARD_HEIGHT: float = 1.58
+CHAR_BILLBOARD_WIDTH: float = CHAR_BILLBOARD_HEIGHT * (CHAR_BASE_WIDTH_PX / CHAR_BASE_HEIGHT_PX)
+# Vertical offset so y=476px sits right on Z=0.0 workshop floor:
+CHAR_Z_BOTTOM_OFFSET: float = -((CHAR_BASE_HEIGHT_PX - CHAR_FEET_Y_PX) / CHAR_BASE_HEIGHT_PX) * CHAR_BILLBOARD_HEIGHT
+
+# ==============================================================================
 # BEAT SHEET TIMING
 # ==============================================================================
 BEAT1_START, BEAT1_END = 1, 60     # Fast Travel Establishing & Zoom-In
@@ -50,23 +63,21 @@ WELD_ARC_END: int = 203
 # ==============================================================================
 # SPATIAL ANCHORS (World Coordinates in Meters, Blender Z-Up)
 # ==============================================================================
-# Car sits near origin, angled slightly for dynamic 3/4 workshop composition.
-# Mechanic stands on the negative-Y side of the front-left fender facing +Y.
-MECHANIC_ROOT_POS: Tuple[float, float, float] = (-0.18, -1.02, 0.0)
+# Empty_Mechanic sits beside the front-left fender (27cm from seam so 21cm torch bridges hand->fender!)
+MECHANIC_ROOT_POS: Tuple[float, float, float] = (-0.14, -0.72, 0.0)
+MECHANIC_BASE_YAW_DEG: float = 36.0
 
 # Exact 3D weld seam along the car's front-left fender arch/panel
-# Mechanic reaches comfortably forward (+Y) at chest/upper-waist height (Z ~ 0.96m)
 WELD_SEAM_START: Tuple[float, float, float] = (-0.34, -0.43, 0.955)
 WELD_SEAM_MID: Tuple[float, float, float] = (-0.17, -0.445, 0.975)
 WELD_SEAM_END: Tuple[float, float, float] = (0.01, -0.43, 0.945)
 
-# Safe hand rest point on upper intact fender lip for Mechanic's Left Hand during Beat 3
-# Carefully placed on the outer/upper surface so fingers rest cleanly without clipping
 FENDER_LEFT_HAND_REST: Tuple[float, float, float] = (-0.46, -0.47, 1.035)
 
-# MIG Welder unit & Gas Cylinder position (to Mechanic's right-rear, +X / -Y)
+# MIG Welder unit & Gas Cylinder position
 WELDER_UNIT_POS: Tuple[float, float, float] = (0.92, -1.32, 0.0)
 WELDER_CABLE_SOCKET: Tuple[float, float, float] = (0.72, -1.12, 0.56)
+
 
 # ==============================================================================
 # COLOR UTILITIES & CEL-SHADE PALETTE (sRGB -> Linear RGB for Blender Nodes)
@@ -94,55 +105,36 @@ def hex_to_rgb(hex_color: str) -> Tuple[float, float, float]:
 
 
 PALETTE_HEX: Dict[str, str] = {
-    # Ink Outlines (matches mekanik_muda_character.py #201720)
     "ink_outline": "#201720",
-    # Character exact colors from CHARACTER_CONFIG
-    "skin": "#FBE1CA",
-    "skin_blush": "#DEAE96",
-    "iris_honey": "#B86B22",
-    "hair_dark": "#332018",
-    "vest_mustard": "#D89E28",
-    "tee_ivory": "#F4EFE1",
-    "belt_leather": "#4E2E1D",
-    "buckle_metal": "#7D8088",
     "brass_goggles": "#9E7A38",
-    "strap_black": "#232026",
-    "goggle_lens": "#2F5E4E",
-    "loupe_glass": "#9FE0F2",
-    "noodle_limb": "#1F161E",
-    "pencil_yellow": "#F2BE26",
-    "pencil_eraser": "#DE8F96",
-    "bandage_cream": "#F0DEC4",
-    "copper_wire": "#C86D3B",
-    "screwdriver_red": "#D82E29",
     # Stylized Car & Welding Props
     "car_body_teal": "#2B7A9B",
-    "car_body_accent": "#E8ECF2",
-    "car_primer_grey": "#6E7682",
-    "car_interior": "#272A34",
-    "car_tire": "#1E2026",
-    "car_rim_alloy": "#C9D3E0",
-    "jack_orange": "#E05A2B",
-    "welder_red": "#C8372D",
-    "gas_tank_green": "#2D5A4C",
-    "torch_yellow": "#E5A92E",
-    "torch_copper": "#D47A42",
-    # Workshop Environment
-    "floor_concrete": "#464B57",
-    "floor_line_yellow": "#D9A432",
-    "floor_oil": "#22252E",
-    "wall_brick": "#5C4948",
-    "wall_lower": "#383E4C",
-    "steel_beam": "#2F3542",
-    "bench_wood": "#8C6239",
-    "bench_frame": "#2E3642",
-    "tool_red": "#C9382E",
-    "oil_can_yellow": "#E0A82E",
-    "oil_can_blue": "#346FA8",
-    "lamp_shade": "#303A48",
+    "car_body_accent": "#DDE4EE",
+    "car_primer_grey": "#68707C",
+    "car_interior": "#232630",
+    "car_tire": "#1C1E24",
+    "car_rim_alloy": "#BCC7D6",
+    "jack_orange": "#D95628",
+    "welder_red": "#C2342A",
+    "gas_tank_green": "#2B5648",
+    "torch_yellow": "#DFA228",
+    "torch_copper": "#CE743C",
+    # Workshop Environment (darkened slightly for rich contrast under Standard View Transform)
+    "floor_concrete": "#3A3F4B",
+    "floor_line_yellow": "#CF9A2C",
+    "floor_oil": "#1C1F28",
+    "wall_brick": "#4B3B3B",
+    "wall_lower": "#2E3442",
+    "steel_beam": "#262C38",
+    "bench_wood": "#7D5632",
+    "bench_frame": "#28303C",
+    "tool_red": "#BD342A",
+    "oil_can_yellow": "#D69E28",
+    "oil_can_blue": "#2F669C",
+    "lamp_shade": "#2A3340",
     # VFX
     "weld_arc_core": "#E8FAFF",
-    "weld_arc_blue": "#52C8FF",
+    "weld_arc_blue": "#38BEFF",
     "spark_gold": "#FFC44D",
     "seam_molten": "#FF6E1A",
 }

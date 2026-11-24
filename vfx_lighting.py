@@ -95,8 +95,8 @@ def _setup_world_background(scene: bpy.types.Scene) -> None:
     out.location = (300, 0)
     bg = nt.nodes.new("ShaderNodeBackground")
     bg.location = (0, 0)
-    bg.inputs["Color"].default_value = hex_to_rgba("#1C2436")
-    bg.inputs["Strength"].default_value = 0.22
+    bg.inputs["Color"].default_value = hex_to_rgba("#141923")
+    bg.inputs["Strength"].default_value = 0.18
     nt.links.new(bg.outputs["Background"], out.inputs["Surface"])
 
 
@@ -140,27 +140,27 @@ def build_lighting_and_vfx(
     vfx_col = get_or_create_collection("Col_VFX_Lighting")
 
     # ==========================================================================
-    # 1. WORKSHOP DRAMATIC KEY, BAY & COOL RIM LIGHTS (Calibrated for 3-Band Cel)
+    # 1. WORKSHOP DRAMATIC KEY, BAY & COOL RIM LIGHTS (Calibrated for Standard View)
     # ==========================================================================
     # Warm Overhead Key Light under main pendant lamp
     key_light = _create_area_light(
         "Light_Workshop_Key", vfx_col,
         location=(-0.35, -0.85, 2.86),
-        target_pt=(-0.18, -0.65, 1.05),
-        energy=68.0,
+        target_pt=(-0.18, -0.55, 0.95),
+        energy=36.0,
         hex_color="#FFD7A6",
-        size=1.35,
+        size=1.40,
         cast_shadow=True,
     )
 
-    # Cool Rim Light behind-right of Mechanic & Car to separate silhouettes
+    # Cool Rim Light behind-right of Car to separate 3D silhouettes
     rim_light = _create_area_light(
         "Light_Workshop_CoolRim", vfx_col,
-        location=(1.15, 0.75, 2.25),
-        target_pt=(-0.12, -0.88, 1.18),
-        energy=45.0,
+        location=(1.25, 0.85, 2.25),
+        target_pt=(-0.14, -0.65, 1.05),
+        energy=24.0,
         hex_color="#6EC8FF",
-        size=1.15,
+        size=1.20,
         cast_shadow=True,
     )
 
@@ -168,10 +168,10 @@ def build_lighting_and_vfx(
     bay_left = _create_area_light(
         "Light_Workshop_BayLeft", vfx_col,
         location=(-2.35, -0.95, 2.92),
-        target_pt=(-3.25, -1.10, 1.10),
-        energy=48.0,
+        target_pt=(-3.25, -1.10, 1.00),
+        energy=26.0,
         hex_color="#FFE2B8",
-        size=1.20,
+        size=1.25,
         cast_shadow=False,
     )
 
@@ -179,19 +179,19 @@ def build_lighting_and_vfx(
     bay_back = _create_area_light(
         "Light_Workshop_BayBack", vfx_col,
         location=(1.85, 0.55, 2.92),
-        target_pt=(0.65, 0.35, 0.95),
-        energy=42.0,
+        target_pt=(0.65, 0.35, 0.90),
+        energy=22.0,
         hex_color="#CFE2FF",
         size=1.40,
         cast_shadow=False,
     )
 
-    # Gentle Front-Left Bounce Fill (shadowless, keeps 3/4 face & cel-outlines clean)
+    # Gentle Front-Left Bounce Fill (keeps 3D props readable without washing walls)
     front_fill = _create_area_light(
         "Light_Mechanic_FrontFill", vfx_col,
-        location=(-2.15, -1.65, 1.35),
-        target_pt=(-0.15, -0.92, 1.15),
-        energy=22.0,
+        location=(-2.25, -1.65, 1.35),
+        target_pt=(-0.15, -0.65, 1.00),
+        energy=9.0,
         hex_color="#FFF6EC",
         size=1.60,
         cast_shadow=False,
@@ -208,16 +208,14 @@ def build_lighting_and_vfx(
 
     arc_light = bpy.data.objects.new("Light_WeldArc", arc_ldata)
     arc_light.parent = torch_tip_empty
-    # Slight -Y/-X offset so light bathes both fender and mechanic's front face & goggles!
     arc_light.location = (-0.015, -0.035, 0.015)
     link_exclusively(arc_light, vfx_col)
 
-    # Keyframe energy ONLY active during [WELD_ARC_START .. WELD_ARC_END] + F-Curve Noise!
     for f, val in [
         (1, 0.0),
         (WELD_ARC_START - 1, 0.0),
-        (WELD_ARC_START, 95.0),
-        (WELD_ARC_END, 95.0),
+        (WELD_ARC_START, 72.0),
+        (WELD_ARC_END, 72.0),
         (WELD_ARC_END + 1, 0.0),
         (FRAME_END, 0.0),
     ]:
@@ -234,7 +232,7 @@ def build_lighting_and_vfx(
         frame_start=float(WELD_ARC_START),
         frame_end=float(WELD_ARC_END),
         scale=1.25,
-        strength=68.0,
+        strength=52.0,
         phase=7.3,
     )
 

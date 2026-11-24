@@ -126,13 +126,13 @@ def apply_cel_outline(
 def get_cel_material(
     name: str,
     hex_color: str,
-    shadow_factor: float = 0.46,
-    mid_factor: float = 0.92,
-    lit_factor: float = 1.08,
+    shadow_factor: float = 0.42,
+    mid_factor: float = 0.84,
+    lit_factor: float = 0.98,
     spec_strength: float = 0.0,
-    rim_strength: float = 0.12,
-    roughness: float = 0.45,
-    colored_light_mix: float = 0.55,
+    rim_strength: float = 0.08,
+    roughness: float = 0.48,
+    colored_light_mix: float = 0.50,
 ) -> bpy.types.Material:
     """
     3-Band Stepped Anime/Cartoon Cel-Shade Material:
