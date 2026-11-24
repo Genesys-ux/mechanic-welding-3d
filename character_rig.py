@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import math
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -49,6 +50,7 @@ def load_source_character_blueprint() -> Dict[str, Any]:
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load spec from {CHARACTER_SCRIPT_PATH}")
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
 
     cfg = dict(getattr(mod, "CHARACTER_CONFIG", {}))
@@ -140,7 +142,7 @@ def _generate_bird_patch_texture(out_dir: Path) -> str:
     draw_seg(cx + 14, cy + 120, cx + 52, cy + 118, 6.5, ink)
 
     # Flip vertically for Blender bottom-up pixel order
-    flipped = np.flipud(img_arr)
+    flipped = np.ascontiguousarray(np.flipud(img_arr), dtype=np.float32)
     b_img = bpy.data.images.new("Tex_VestBirdPatch", width=W, height=H, alpha=True)
     b_img.pixels.foreach_set(flipped.ravel())
     b_img.filepath_raw = str(tex_path)
