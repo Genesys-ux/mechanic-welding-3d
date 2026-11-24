@@ -244,29 +244,29 @@ def _create_skinned_noodle_tube(
     arm_obj: bpy.types.Object,
     bone_upper: str,
     bone_lower: str,
-    outline_thickness: float = 0.0055,
-    rings: int = 32,
+    outline_thickness: float = 0.005,
+    rings: int = 40,
     sectors: int = 16,
 ) -> bpy.types.Object:
     """
-    Create a high-subdivision organic noodle limb mesh along p_start -> p_mid -> p_end
-    (in world space) with smooth Hermite blended vertex weights across `bone_upper` and
-    `bone_lower` so 2-bone IK + Bendy Bones bend in a silky cartoon arc with zero pinching!
+    Create a high-subdivision organic noodle limb mesh along a smooth Quadratic Bezier
+    curve p_start -> p_mid -> p_end with wide Hermite blended weights across `bone_upper`
+    and `bone_lower` and open ends (tucked inside sleeve/mitt) so Solidify NEVER spikes!
     """
     bm = bmesh.new()
     ring_verts: List[List[bmesh.types.BMVert]] = []
     ring_ts: List[float] = []
 
-    # Build centerline points in armature-local space
     arm_inv = arm_obj.matrix_world.inverted()
     s_loc = arm_inv @ p_start
     m_loc = arm_inv @ p_mid
     e_loc = arm_inv @ p_end
+    # Quadratic Bezier control point passing near m_loc for round cartoon limb rest shape
+    ctrl = m_loc * 1.45 - (s_loc + e_loc) * 0.225
 
     def sample_pos(u: float) -> Vector:
-        if u <= 0.5:
-            return s_loc.lerp(m_loc, u * 2.0)
-        return m_loc.lerp(e_loc, (u - 0.5) * 2.0)
+        omt = 1.0 - u
+        return (omt * omt) * s_loc + (2.0 * omt * u) * ctrl + (u * u) * e_loc
 
     for r_i in range(rings + 1):
         u = r_i / rings
@@ -282,19 +282,14 @@ def _create_skinned_noodle_tube(
         n1 = tangent.cross(ref).normalized()
         n2 = tangent.cross(n1).normalized()
 
-        # Slight rounded cap taper at very ends
-        end_taper = 1.0
-        if r_i == 0 or r_i == rings:
-            end_taper = 0.72
-
         v_ring = []
         for s_i in range(sectors):
             ang = (2.0 * math.pi * s_i) / sectors
-            off = (n1 * math.cos(ang) + n2 * math.sin(ang)) * (radius * end_taper)
+            off = (n1 * math.cos(ang) + n2 * math.sin(ang)) * radius
             v_ring.append(bm.verts.new(c_pt + off))
         ring_verts.append(v_ring)
 
-    # Connect rings
+    # Connect rings (no N-gon end caps — ends tuck cleanly inside sleeve/hip & mitt/foot!)
     for r_i in range(rings):
         for s_i in range(sectors):
             s_next = (s_i + 1) % sectors
@@ -304,10 +299,6 @@ def _create_skinned_noodle_tube(
                 ring_verts[r_i + 1][s_next],
                 ring_verts[r_i + 1][s_i],
             ])
-
-    # Cap ends
-    bm.faces.new(list(reversed(ring_verts[0])))
-    bm.faces.new(ring_verts[-1])
 
     mesh = bpy.data.meshes.new(name + "_Mesh")
     bm.normal_update()
@@ -322,13 +313,12 @@ def _create_skinned_noodle_tube(
     obj.data.materials.append(mat)
     link_exclusively(obj, col)
 
-    # Assign smooth blended vertex weights around the elbow/knee joint (u = 0.5)
+    # Wide smoothstep blend over u in [0.22 .. 0.78] for silky rubber-hose elbow/knee arc!
     vg_up = obj.vertex_groups.new(name=bone_upper)
     vg_lo = obj.vertex_groups.new(name=bone_lower)
 
     for r_i, u in enumerate(ring_ts):
-        # Smoothstep blend over u in [0.34 .. 0.66] for round rubber-hose bend!
-        x = max(0.0, min(1.0, (u - 0.34) / 0.32))
+        x = max(0.0, min(1.0, (u - 0.22) / 0.56))
         w_lo = x * x * (3.0 - 2.0 * x)
         w_up = 1.0 - w_lo
         v_indices = [r_i * sectors + s_i for s_i in range(sectors)]
@@ -342,7 +332,7 @@ def _create_skinned_noodle_tube(
     arm_mod.use_deform_preserve_volume = True
 
     if outline_thickness > 0.0:
-        apply_cel_outline(obj, thickness=outline_thickness)
+        apply_cel_outline(obj, thickness=outline_thickness, use_even_offset=False)
 
     return obj
 
@@ -785,13 +775,13 @@ def build_mechanic_character(torch_obj: Optional[bpy.types.Object] = None) -> Di
     bmesh.ops.solidify(bm_hcap, geom=list(bm_hcap.faces), thickness=0.022)
     _create_bone_parented_mesh("Char_Hair_Cap", bm_hcap, char_col, mat_hair, arm_obj, "Head", W(0.0, -0.012, 1.255), outline_thickness=0.009)
 
-    # Wavy Side-Swept Forehead Bang Volume (sits neatly above forehead Z=1.34..1.44)
+    # Wavy Side-Swept Forehead Bang Volume (tucked neatly above the brass goggles Z=1.41..1.45)
     for b_idx, (bx_h, by_h, bz_h, sx_h, sy_h, sz_h, rz_h) in enumerate([
-        (-0.11, 0.12, 1.385, 0.135, 0.095, 0.068, 0.25),
-        (0.02, 0.14, 1.400, 0.145, 0.095, 0.072, -0.10),
-        (0.13, 0.11, 1.380, 0.125, 0.090, 0.065, -0.32),
-        (-0.21, 0.04, 1.320, 0.065, 0.085, 0.065, 0.35),
-        (0.21, 0.04, 1.320, 0.065, 0.085, 0.065, -0.35),
+        (-0.10, 0.08, 1.408, 0.115, 0.078, 0.048, 0.25),
+        (0.02, 0.09, 1.418, 0.125, 0.080, 0.052, -0.10),
+        (0.12, 0.07, 1.402, 0.110, 0.076, 0.046, -0.32),
+        (-0.21, 0.03, 1.325, 0.058, 0.075, 0.055, 0.35),
+        (0.21, 0.03, 1.325, 0.058, 0.075, 0.055, -0.35),
     ]):
         bm_b = bmesh.new()
         bmesh.ops.create_uvsphere(bm_b, u_segments=18, v_segments=12, radius=1.0)
@@ -943,20 +933,28 @@ def build_mechanic_character(torch_obj: Optional[bpy.types.Object] = None) -> Di
         W(0.0, -0.008, 1.355), world_rot=(-0.10, -0.08, 0.0), outline_thickness=0.005
     )
 
-    # Asymmetric Brass Cups: Left (-X) is LARGER (r=0.056), Right (+X) is SMALLER (r=0.044)
-    for cup_tag, cx_g, r_cup in (("LeftLarge", -0.066, 0.056), ("RightSmall", 0.064, 0.044)):
+    # Asymmetric Brass Cups: Left (-X) is LARGER (r=0.058), Right (+X) is SMALLER (r=0.045)
+    # Positioned clearly proud of the forehead (+Y = 0.208) with thick brass torus bezels!
+    for cup_tag, cx_g, r_cup in (("LeftLarge", -0.066, 0.058), ("RightSmall", 0.064, 0.045)):
+        cz_g = 1.356 - (0.006 if cx_g > 0 else 0.0)
+        c_rot = (math.pi * 0.5 - 0.10, 0.0, (-0.16 if cx_g > 0 else 0.16))
+
         bm_cup = bmesh.new()
-        bmesh.ops.create_cone(bm_cup, cap_ends=True, cap_tris=False, segments=24, radius1=r_cup, radius2=r_cup * 0.94, depth=0.042)
-        _create_bone_parented_mesh(f"Char_Goggles_Cup_{cup_tag}", bm_cup, char_col, mat_brass, arm_obj, "Goggles_Ctrl", W(cx_g, 0.204, 1.358 - (0.008 if cx_g > 0 else 0.0)), world_rot=(math.pi * 0.5 - 0.10, 0.0, (-0.16 if cx_g > 0 else 0.16)), outline_thickness=0.006)
+        bmesh.ops.create_cone(bm_cup, cap_ends=True, cap_tris=False, segments=24, radius1=r_cup, radius2=r_cup * 0.95, depth=0.052)
+        _create_bone_parented_mesh(f"Char_Goggles_Cup_{cup_tag}", bm_cup, char_col, mat_strap, arm_obj, "Goggles_Ctrl", W(cx_g, 0.202, cz_g), world_rot=c_rot, outline_thickness=0.0055)
+
+        # Prominent Gleaming Brass Outer Rim Bezel Torus!
+        bm_bez = _make_torus_bmesh(major_radius=r_cup * 0.92, minor_radius=0.0105, major_segments=26, minor_segments=10)
+        _create_bone_parented_mesh(f"Char_Goggles_Bezel_{cup_tag}", bm_bez, char_col, mat_brass, arm_obj, "Goggles_Ctrl", W(cx_g, 0.226, cz_g + 0.002), world_rot=c_rot, outline_thickness=0.0045)
 
         bm_lns = bmesh.new()
-        bmesh.ops.create_cone(bm_lns, cap_ends=True, cap_tris=False, segments=22, radius1=r_cup * 0.78, radius2=r_cup * 0.78, depth=0.046)
-        _create_bone_parented_mesh(f"Char_Goggles_Lens_{cup_tag}", bm_lns, char_col, mat_lens, arm_obj, "Goggles_Ctrl", W(cx_g, 0.206, 1.358 - (0.008 if cx_g > 0 else 0.0)), world_rot=(math.pi * 0.5 - 0.10, 0.0, (-0.16 if cx_g > 0 else 0.16)), outline_thickness=0.0)
+        bmesh.ops.create_cone(bm_lns, cap_ends=True, cap_tris=False, segments=22, radius1=r_cup * 0.82, radius2=r_cup * 0.82, depth=0.012)
+        _create_bone_parented_mesh(f"Char_Goggles_Lens_{cup_tag}", bm_lns, char_col, mat_lens, arm_obj, "Goggles_Ctrl", W(cx_g, 0.224, cz_g + 0.002), world_rot=c_rot, outline_thickness=0.0)
 
         # Crisp Specular Glint on Welding Lens
         bm_lg = bmesh.new()
         bmesh.ops.create_uvsphere(bm_lg, u_segments=10, v_segments=8, radius=r_cup * 0.18)
-        _create_bone_parented_mesh(f"Char_Goggles_Glint_{cup_tag}", bm_lg, char_col, mat_glint, arm_obj, "Goggles_Ctrl", W(cx_g - r_cup * 0.25, 0.228, 1.370 - (0.008 if cx_g > 0 else 0.0)), outline_thickness=0.0)
+        _create_bone_parented_mesh(f"Char_Goggles_Glint_{cup_tag}", bm_lg, char_col, mat_glint, arm_obj, "Goggles_Ctrl", W(cx_g - r_cup * 0.24, 0.233, cz_g + r_cup * 0.24), outline_thickness=0.0)
 
     # Center Nose Bridge Link between Cups
     bm_brg = bmesh.new()

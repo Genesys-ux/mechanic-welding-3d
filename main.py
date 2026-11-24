@@ -110,17 +110,22 @@ def configure_render_and_compositor(
     scene.render.resolution_percentage = 100
     scene.render.film_transparent = False
 
-    # Color management: Standard or AgX Base for vibrant cel-shading
+    # Color management: AgX Medium High Contrast prevents any highlight clipping!
     vs = scene.view_settings
     try:
-        vs.view_transform = "Standard"
-        vs.look = "None"
+        vs.view_transform = "AgX"
+        for lk in ("AgX - Medium High Contrast", "AgX - Punchy", "None"):
+            try:
+                vs.look = lk
+                break
+            except Exception:
+                pass
     except Exception:
-        pass
+        vs.view_transform = "Filmic"
     vs.exposure = 0.0
     vs.gamma = 1.0
 
-    # Compositor Fog-Glow Bloom for intense blue-white welding arc, sparks & molten seam!
+    # Compositor Bloom strictly for HDR Emission > 2.8 (Welding Arc, Sparks & Molten Seam)!
     scene.use_nodes = True
     nt = scene.node_tree
     nt.nodes.clear()
@@ -135,12 +140,12 @@ def configure_render_and_compositor(
     except Exception:
         glare.glare_type = "FOG_GLOW"
     glare.quality = "MEDIUM"
-    glare.threshold = 1.55
+    glare.threshold = 2.8
     try:
-        glare.size = 7
+        glare.size = 6
     except Exception:
         pass
-    glare.mix = -0.35
+    glare.mix = -0.55
 
     comp = nt.nodes.new("CompositorNodeComposite")
     comp.location = (340, 0)

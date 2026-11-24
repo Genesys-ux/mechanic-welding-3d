@@ -96,7 +96,7 @@ def _setup_world_background(scene: bpy.types.Scene) -> None:
     bg = nt.nodes.new("ShaderNodeBackground")
     bg.location = (0, 0)
     bg.inputs["Color"].default_value = hex_to_rgba("#1C2436")
-    bg.inputs["Strength"].default_value = 0.52
+    bg.inputs["Strength"].default_value = 0.22
     nt.links.new(bg.outputs["Background"], out.inputs["Surface"])
 
 
@@ -140,26 +140,26 @@ def build_lighting_and_vfx(
     vfx_col = get_or_create_collection("Col_VFX_Lighting")
 
     # ==========================================================================
-    # 1. WORKSHOP DRAMATIC KEY, BAY & COOL RIM LIGHTS
+    # 1. WORKSHOP DRAMATIC KEY, BAY & COOL RIM LIGHTS (Calibrated for 3-Band Cel)
     # ==========================================================================
     # Warm Overhead Key Light under main pendant lamp
     key_light = _create_area_light(
         "Light_Workshop_Key", vfx_col,
-        location=(-0.22, -0.78, 2.86),
+        location=(-0.35, -0.85, 2.86),
         target_pt=(-0.18, -0.65, 1.05),
-        energy=290.0,
+        energy=68.0,
         hex_color="#FFD7A6",
         size=1.35,
         cast_shadow=True,
     )
 
-    # Cool Rim Light behind-left of Mechanic & Car to separate silhouettes
+    # Cool Rim Light behind-right of Mechanic & Car to separate silhouettes
     rim_light = _create_area_light(
         "Light_Workshop_CoolRim", vfx_col,
-        location=(-1.65, 0.95, 2.25),
-        target_pt=(-0.18, -0.88, 1.18),
-        energy=230.0,
-        hex_color="#66C6FF",
+        location=(1.15, 0.75, 2.25),
+        target_pt=(-0.12, -0.88, 1.18),
+        energy=45.0,
+        hex_color="#6EC8FF",
         size=1.15,
         cast_shadow=True,
     )
@@ -169,7 +169,7 @@ def build_lighting_and_vfx(
         "Light_Workshop_BayLeft", vfx_col,
         location=(-2.35, -0.95, 2.92),
         target_pt=(-3.25, -1.10, 1.10),
-        energy=175.0,
+        energy=48.0,
         hex_color="#FFE2B8",
         size=1.20,
         cast_shadow=False,
@@ -180,19 +180,19 @@ def build_lighting_and_vfx(
         "Light_Workshop_BayBack", vfx_col,
         location=(1.85, 0.55, 2.92),
         target_pt=(0.65, 0.35, 0.95),
-        energy=160.0,
+        energy=42.0,
         hex_color="#CFE2FF",
         size=1.40,
         cast_shadow=False,
     )
 
-    # Gentle Front Bounce Fill (shadowless, keeps dark cel-outlines & eyes clean)
+    # Gentle Front-Left Bounce Fill (shadowless, keeps 3/4 face & cel-outlines clean)
     front_fill = _create_area_light(
         "Light_Mechanic_FrontFill", vfx_col,
-        location=(-0.35, -2.75, 1.35),
-        target_pt=(-0.18, -0.95, 1.15),
-        energy=65.0,
-        hex_color="#E8F0FF",
+        location=(-2.15, -1.65, 1.35),
+        target_pt=(-0.15, -0.92, 1.15),
+        energy=22.0,
+        hex_color="#FFF6EC",
         size=1.60,
         cast_shadow=False,
     )
@@ -201,23 +201,23 @@ def build_lighting_and_vfx(
     # 2. WELDING ARC FLICKERING POINT LIGHT (`Light_WeldArc`)
     # ==========================================================================
     arc_ldata = bpy.data.lights.new("Light_WeldArc_Data", type="POINT")
-    arc_ldata.color = hex_to_rgb(PALETTE_HEX["weld_arc_blue"])
+    arc_ldata.color = hex_to_rgb("#1EB2FF")
     arc_ldata.shadow_soft_size = 0.035
     if hasattr(arc_ldata, "use_shadow"):
         arc_ldata.use_shadow = True
 
     arc_light = bpy.data.objects.new("Light_WeldArc", arc_ldata)
     arc_light.parent = torch_tip_empty
-    # Slight -Y offset toward mechanic so light never clips inside the car panel
-    arc_light.location = (0.0, -0.022, 0.012)
+    # Slight -Y/-X offset so light bathes both fender and mechanic's front face & goggles!
+    arc_light.location = (-0.015, -0.035, 0.015)
     link_exclusively(arc_light, vfx_col)
 
     # Keyframe energy ONLY active during [WELD_ARC_START .. WELD_ARC_END] + F-Curve Noise!
     for f, val in [
         (1, 0.0),
         (WELD_ARC_START - 1, 0.0),
-        (WELD_ARC_START, 220.0),
-        (WELD_ARC_END, 220.0),
+        (WELD_ARC_START, 95.0),
+        (WELD_ARC_END, 95.0),
         (WELD_ARC_END + 1, 0.0),
         (FRAME_END, 0.0),
     ]:
@@ -234,7 +234,7 @@ def build_lighting_and_vfx(
         frame_start=float(WELD_ARC_START),
         frame_end=float(WELD_ARC_END),
         scale=1.25,
-        strength=165.0,
+        strength=68.0,
         phase=7.3,
     )
 
@@ -370,7 +370,7 @@ def build_lighting_and_vfx(
     for s_idx in range(num_streaks):
         bm_st = bmesh.new()
         bmesh.ops.create_icosphere(bm_st, subdivisions=1, radius=1.0)
-        bmesh.ops.scale(bm_st, vec=(0.0055, 0.042, 0.0055), verts=bm_st.verts)
+        bmesh.ops.scale(bm_st, vec=(0.0085, 0.062, 0.0085), verts=bm_st.verts)
         st_mesh = bpy.data.meshes.new(f"VFX_SparkStreak_{s_idx:02d}_Mesh")
         bm_st.to_mesh(st_mesh)
         bm_st.free()
