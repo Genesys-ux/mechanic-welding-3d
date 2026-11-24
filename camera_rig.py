@@ -99,7 +99,7 @@ def build_cinematic_camera_rig(scene: bpy.types.Scene) -> Dict[str, bpy.types.Ob
 
     # 3) Dynamic Camera Look-At Target (`Cam_FocusTarget`)
     target = bpy.data.objects.new("Cam_FocusTarget", None)
-    target.empty_display_type = "CROSS"
+    target.empty_display_type = "PLAIN_AXES"
     target.empty_display_size = 0.12
     link_exclusively(target, cam_col)
 
