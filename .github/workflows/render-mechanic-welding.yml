@@ -37,13 +37,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install resvg-py pillow
 
-      - name: Install headless OpenGL (Xvfb + Mesa) & FFmpeg
+      - name: Install headless OpenGL (Xvfb + Mesa), Fonts & FFmpeg
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             xvfb libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libxi6 \
             libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libice6 \
-            libglu1-mesa ffmpeg xz-utils
+            libglu1-mesa ffmpeg xz-utils fonts-dejavu-core
 
       - name: Cache Blender ${{ env.BLENDER_VERSION }} LTS
         id: cache-blender
@@ -79,8 +79,9 @@ jobs:
           "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
             --python export_camera_sync.py -- --mode "${{ inputs.mode }}"
 
-      - name: "Stage 2: Render Native 2.5D MekanikMudaCharacter Sprites & Hand Sync (Python)"
+      - name: "Stage 2: Generate 2D Prop/Wall Decals & Native 2.5D Sprites (Python)"
         run: |
+          python generate_prop_decals.py
           python render_char_25d.py
 
       - name: "Stage 3: Assemble 3D+2.5D Scene & Render (${{ inputs.mode }})"

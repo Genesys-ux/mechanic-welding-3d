@@ -1,10 +1,12 @@
 """
-shaders.py — 3D Cel-Shade Material Library & Inverted-Hull Bold Outline Generator
-Compatible with Blender 3.6 LTS and Blender 4.2+ LTS (EEVEE & EEVEE Next).
+shaders.py — Rich 3D Cel-Shade Material Library, AO + Procedural Surface Detail,
+GLB Reference Material Converter, Decal Shaders & Inverted-Hull Bold Outlines.
+Compatible with Blender 4.2+ LTS (EEVEE Next) and Standard View Transform.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional, Tuple
 
 import bpy
@@ -17,10 +19,10 @@ def _scale_rgba(
     factor: float,
     tint_white: float = 0.0,
 ) -> Tuple[float, float, float, float]:
-    # Clamp strictly <= 0.98 linear so non-emissive cel surfaces never trigger HDR bloom!
-    r = min(0.98, max(0.0, rgba[0] * factor + tint_white))
-    g = min(0.98, max(0.0, rgba[1] * factor + tint_white))
-    b = min(0.98, max(0.0, rgba[2] * factor + tint_white))
+    # Clamp strictly <= 0.96 linear so non-emissive cel surfaces never trigger HDR bloom
+    r = min(0.96, max(0.0, rgba[0] * factor + tint_white))
+    g = min(0.96, max(0.0, rgba[1] * factor + tint_white))
+    b = min(0.96, max(0.0, rgba[2] * factor + tint_white))
     return (r, g, b, rgba[3])
 
 
@@ -31,7 +33,7 @@ def get_ink_outline_material(
     """
     Create or retrieve the bold cartoon Inverted-Hull outline material (#201720).
     Uses Light Path -> Is Shadow Ray -> Transparent BSDF so the flipped outer shell
-    NEVER casts self-shadows onto the inner cel-shaded mesh in EEVEE / EEVEE Next!
+    NEVER casts self-shadows onto the inner cel-shaded mesh.
     """
     if name in bpy.data.materials:
         return bpy.data.materials[name]
@@ -84,14 +86,11 @@ def get_ink_outline_material(
 
 def apply_cel_outline(
     obj: bpy.types.Object,
-    thickness: float = 0.0075,
+    thickness: float = 0.0065,
     outline_mat: Optional[bpy.types.Material] = None,
     use_even_offset: bool = False,
 ) -> Optional[bpy.types.Modifier]:
-    """
-    Attach an Inverted-Hull Solidify modifier with flipped normals and bold ink outline material.
-    `use_even_offset = False` prevents miter spikes on curved limbs and acute bevels!
-    """
+    """Attach an Inverted-Hull Solidify modifier with flipped normals and bold ink outline."""
     if obj.type != "MESH" or obj.data is None:
         return None
 
@@ -123,25 +122,183 @@ def apply_cel_outline(
     return mod
 
 
+def _build_ao_factor_socket(nt: bpy.types.NodeTree, loc_x: float, loc_y: float, strength: float = 0.45):
+    """Create an Ambient Occlusion crevice darkening factor socket (1.0 - strength .. 1.0)."""
+    ao = nt.nodes.new("ShaderNodeAmbientOcclusion")
+    ao.samples = 8
+    ao.only_local = False
+    ao.location = (loc_x, loc_y)
+    ao.inputs["Distance"].default_value = 0.42
+
+    ao_ramp = nt.nodes.new("ShaderNodeValToRGB")
+    ao_ramp.location = (loc_x + 200, loc_y)
+    ao_ramp.color_ramp.interpolation = "EASE"
+    ao_ramp.color_ramp.elements[0].position = 0.12
+    dark = max(0.25, 1.0 - strength)
+    ao_ramp.color_ramp.elements[0].color = (dark, dark * 0.96, dark * 1.02, 1.0)
+    ao_ramp.color_ramp.elements[1].position = 0.78
+    ao_ramp.color_ramp.elements[1].color = (1.0, 1.0, 1.0, 1.0)
+    nt.links.new(ao.outputs["AO"], ao_ramp.inputs["Fac"])
+    return ao_ramp.outputs["Color"]
+
+
+def _build_procedural_surface_detail(
+    nt: bpy.types.NodeTree,
+    base_rgba: Tuple[float, float, float, float],
+    surface_type: str,
+    loc_x: float = -760,
+    loc_y: float = -260,
+):
+    """
+    Generate rich procedural surface variation (brick courses, concrete grain & cracks,
+    brushed metal wear, wood planks, car paint flake) so 3D surfaces never look like flat plastic!
+    """
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    tc.location = (loc_x - 220, loc_y)
+
+    if surface_type == "brick":
+        brick = nt.nodes.new("ShaderNodeTexBrick")
+        brick.location = (loc_x, loc_y)
+        brick.offset = 0.5
+        brick.squash = 1.0
+        brick.inputs["Scale"].default_value = 4.2
+        brick.inputs["Mortar Size"].default_value = 0.022
+        brick.inputs["Mortar Smooth"].default_value = 0.15
+        brick.inputs["Bias"].default_value = -0.15
+        brick.inputs["Brick Width"].default_value = 0.52
+        brick.inputs["Row Height"].default_value = 0.24
+        brick.inputs["Color1"].default_value = _scale_rgba(base_rgba, 1.10)
+        brick.inputs["Color2"].default_value = _scale_rgba(base_rgba, 0.80)
+        brick.inputs["Mortar"].default_value = _scale_rgba(base_rgba, 0.45)
+        nt.links.new(tc.outputs["Object"], brick.inputs["Vector"])
+
+        noise = nt.nodes.new("ShaderNodeTexNoise")
+        noise.location = (loc_x, loc_y - 240)
+        noise.inputs["Scale"].default_value = 6.5
+        noise.inputs["Detail"].default_value = 5.0
+        noise.inputs["Roughness"].default_value = 0.65
+        nt.links.new(tc.outputs["Object"], noise.inputs["Vector"])
+
+        grime = nt.nodes.new("ShaderNodeMixRGB")
+        grime.blend_type = "MULTIPLY"
+        grime.location = (loc_x + 240, loc_y)
+        grime.inputs["Fac"].default_value = 0.28
+        nt.links.new(brick.outputs["Color"], grime.inputs[1])
+        nt.links.new(noise.outputs["Fac"], grime.inputs[2])
+        return grime.outputs["Color"]
+
+    if surface_type == "concrete":
+        noise = nt.nodes.new("ShaderNodeTexNoise")
+        noise.location = (loc_x, loc_y)
+        noise.inputs["Scale"].default_value = 5.5
+        noise.inputs["Detail"].default_value = 8.0
+        noise.inputs["Roughness"].default_value = 0.72
+        nt.links.new(tc.outputs["Object"], noise.inputs["Vector"])
+
+        # Subtle Voronoi hairline concrete cracks
+        vor = nt.nodes.new("ShaderNodeTexVoronoi")
+        vor.location = (loc_x, loc_y - 220)
+        vor.feature = "DISTANCE_TO_EDGE"
+        vor.inputs["Scale"].default_value = 1.65
+        nt.links.new(tc.outputs["Object"], vor.inputs["Vector"])
+
+        crack_ramp = nt.nodes.new("ShaderNodeValToRGB")
+        crack_ramp.location = (loc_x + 200, loc_y - 220)
+        crack_ramp.color_ramp.interpolation = "CONSTANT"
+        crack_ramp.color_ramp.elements[0].position = 0.0
+        crack_ramp.color_ramp.elements[0].color = _scale_rgba(base_rgba, 0.50)
+        crack_ramp.color_ramp.elements[1].position = 0.016
+        crack_ramp.color_ramp.elements[1].color = _scale_rgba(base_rgba, 1.0)
+        nt.links.new(vor.outputs["Distance"], crack_ramp.inputs["Fac"])
+
+        grain_ramp = nt.nodes.new("ShaderNodeValToRGB")
+        grain_ramp.location = (loc_x + 200, loc_y)
+        grain_ramp.color_ramp.elements[0].position = 0.28
+        grain_ramp.color_ramp.elements[0].color = (0.82, 0.82, 0.84, 1.0)
+        grain_ramp.color_ramp.elements[1].position = 0.75
+        grain_ramp.color_ramp.elements[1].color = (1.08, 1.08, 1.06, 1.0)
+        nt.links.new(noise.outputs["Fac"], grain_ramp.inputs["Fac"])
+
+        mul = nt.nodes.new("ShaderNodeMixRGB")
+        mul.blend_type = "MULTIPLY"
+        mul.location = (loc_x + 460, loc_y - 60)
+        mul.inputs["Fac"].default_value = 1.0
+        nt.links.new(crack_ramp.outputs["Color"], mul.inputs[1])
+        nt.links.new(grain_ramp.outputs["Color"], mul.inputs[2])
+        return mul.outputs["Color"]
+
+    if surface_type == "wood":
+        wave = nt.nodes.new("ShaderNodeTexWave")
+        wave.location = (loc_x, loc_y)
+        wave.wave_type = "BANDS"
+        wave.bands_direction = "Y"
+        wave.inputs["Scale"].default_value = 3.6
+        wave.inputs["Distortion"].default_value = 4.8
+        wave.inputs["Detail"].default_value = 4.0
+        nt.links.new(tc.outputs["Object"], wave.inputs["Vector"])
+
+        w_ramp = nt.nodes.new("ShaderNodeValToRGB")
+        w_ramp.location = (loc_x + 220, loc_y)
+        w_ramp.color_ramp.interpolation = "CONSTANT"
+        w_ramp.color_ramp.elements[0].position = 0.0
+        w_ramp.color_ramp.elements[0].color = _scale_rgba(base_rgba, 0.78)
+        w_ramp.color_ramp.elements[1].position = 0.42
+        w_ramp.color_ramp.elements[1].color = _scale_rgba(base_rgba, 1.06)
+        nt.links.new(wave.outputs["Fac"], w_ramp.inputs["Fac"])
+        return w_ramp.outputs["Color"]
+
+    # Default subtle workshop wear / brushed metal / painted surface micro-variation
+    noise = nt.nodes.new("ShaderNodeTexNoise")
+    noise.location = (loc_x, loc_y)
+    noise.inputs["Scale"].default_value = 14.0 if surface_type in ("metal", "chrome") else 8.5
+    noise.inputs["Detail"].default_value = 5.0
+    noise.inputs["Roughness"].default_value = 0.6
+    nt.links.new(tc.outputs["Object"], noise.inputs["Vector"])
+
+    n_ramp = nt.nodes.new("ShaderNodeValToRGB")
+    n_ramp.location = (loc_x + 200, loc_y)
+    n_ramp.color_ramp.elements[0].position = 0.25
+    n_ramp.color_ramp.elements[0].color = _scale_rgba(base_rgba, 0.90)
+    n_ramp.color_ramp.elements[1].position = 0.78
+    n_ramp.color_ramp.elements[1].color = _scale_rgba(base_rgba, 1.06)
+    nt.links.new(noise.outputs["Fac"], n_ramp.inputs["Fac"])
+    return n_ramp.outputs["Color"]
+
+
+def _infer_surface_type(mat_name: str, spec_strength: float) -> str:
+    low = mat_name.lower()
+    if "brick" in low:
+        return "brick"
+    if "concrete" in low or "floor" in low or "dado" in low or "wall_lower" in low:
+        return "concrete"
+    if "wood" in low:
+        return "wood"
+    if "chrome" in low or "rim" in low or "steel" in low or "brass" in low or spec_strength >= 0.65:
+        return "chrome"
+    if spec_strength >= 0.35:
+        return "metal"
+    return "painted"
+
+
 def get_cel_material(
     name: str,
     hex_color: str,
     shadow_factor: float = 0.42,
-    mid_factor: float = 0.84,
+    mid_factor: float = 0.85,
     lit_factor: float = 0.98,
     spec_strength: float = 0.0,
     rim_strength: float = 0.08,
     roughness: float = 0.48,
     colored_light_mix: float = 0.50,
+    surface_type: Optional[str] = None,
+    ao_strength: float = 0.42,
 ) -> bpy.types.Material:
     """
-    3-Band Stepped Anime/Cartoon Cel-Shade Material:
-      Principled BSDF -> Shader to RGB -> Constant ColorRamp
-    Features selective Blue-Excess Arc Detection (`Blue - Red * 0.85`) so:
-      - Under warm/neutral workshop lighting, colors remain 100% faithful to CHARACTER_CONFIG
-        with ZERO overexposure or white wash-out!
-      - When the electric cyan-blue Welding Arc fires (Frames 113..203), surfaces facing the
-        arc receive a crisp, stepped electric-blue cel reflection band!
+    Rich 3-Band Cel-Shade Material with:
+      - `Principled BSDF -> Shader to RGB -> Constant ColorRamp`
+      - `Ambient Occlusion` crevice dirt/shadowing
+      - Procedural surface detail (brick, concrete cracks/grain, wood planks, brushed metal)
+      - Selective Welding-Arc Cyan-Blue Bounce (`Blue - Red * 0.88`)
     """
     if name in bpy.data.materials:
         return bpy.data.materials[name]
@@ -152,129 +309,315 @@ def get_cel_material(
     nt.nodes.clear()
 
     base_rgba = hex_to_rgba(hex_color)
+    surf = surface_type or _infer_surface_type(name, spec_strength)
 
     out = nt.nodes.new("ShaderNodeOutputMaterial")
-    out.location = (1080, 0)
+    out.location = (1320, 0)
 
     bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
-    bsdf.location = (-760, 140)
+    bsdf.location = (-820, 220)
     bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
-    bsdf.inputs["Roughness"].default_value = roughness
+    bsdf.inputs["Roughness"].default_value = 0.22 if surf == "chrome" else roughness
     if "Specular IOR Level" in bsdf.inputs:
-        bsdf.inputs["Specular IOR Level"].default_value = 0.45 if spec_strength > 0 else 0.10
+        bsdf.inputs["Specular IOR Level"].default_value = 0.65 if spec_strength > 0 else 0.12
     elif "Specular" in bsdf.inputs:
-        bsdf.inputs["Specular"].default_value = 0.45 if spec_strength > 0 else 0.10
+        bsdf.inputs["Specular"].default_value = 0.65 if spec_strength > 0 else 0.12
 
     s2rgb = nt.nodes.new("ShaderNodeShaderToRGB")
-    s2rgb.location = (-480, 140)
+    s2rgb.location = (-540, 220)
     nt.links.new(bsdf.outputs["BSDF"], s2rgb.inputs["Shader"])
 
-    # 1) 3-Band Stepped Base Color Ramp
-    ramp = nt.nodes.new("ShaderNodeValToRGB")
-    ramp.location = (-180, 240)
-    ramp.color_ramp.interpolation = "CONSTANT"
-    elems = ramp.color_ramp.elements
+    # 1) Stepped Cel Lighting Multiplier Ramp (Shadow / Mid / Lit / Metallic Glint)
+    shade_ramp = nt.nodes.new("ShaderNodeValToRGB")
+    shade_ramp.location = (-240, 260)
+    shade_ramp.color_ramp.interpolation = "CONSTANT"
+    elems = shade_ramp.color_ramp.elements
     elems[0].position = 0.0
-    elems[0].color = _scale_rgba(base_rgba, shadow_factor)
-    elems[1].position = 0.16
-    elems[1].color = _scale_rgba(base_rgba, mid_factor)
-    e_hi = elems.new(0.52)
-    e_hi.color = _scale_rgba(base_rgba, lit_factor, tint_white=0.015)
-    if spec_strength > 0.08:
-        e_spec = elems.new(0.86)
-        e_spec.color = _scale_rgba(base_rgba, lit_factor * 1.08, tint_white=0.12 * spec_strength)
-    nt.links.new(s2rgb.outputs["Color"], ramp.inputs["Fac"])
+    elems[0].color = (shadow_factor, shadow_factor * 0.98, shadow_factor * 1.04, 1.0)
+    elems[1].position = 0.14
+    elems[1].color = (mid_factor, mid_factor, mid_factor, 1.0)
+    e_hi = elems.new(0.48)
+    e_hi.color = (lit_factor, lit_factor, lit_factor, 1.0)
+    if spec_strength > 0.10 or surf == "chrome":
+        e_sp = elems.new(0.78)
+        sp_b = min(1.28, lit_factor + 0.26 * max(spec_strength, 0.5))
+        e_sp.color = (sp_b, sp_b, sp_b, 1.0)
+    nt.links.new(s2rgb.outputs["Color"], shade_ramp.inputs["Fac"])
 
-    # 2) Selective Welding-Arc Cyan-Blue Bounce Detector (`Blue - Red * 0.85`)
+    # 2) Procedural Surface Color Texture (Brick / Concrete / Wood / Brushed Metal)
+    surf_col_sock = _build_procedural_surface_detail(nt, base_rgba, surf, loc_x=-780, loc_y=-160)
+
+    cel_base = nt.nodes.new("ShaderNodeMixRGB")
+    cel_base.blend_type = "MULTIPLY"
+    cel_base.use_clamp = True
+    cel_base.location = (160, 140)
+    cel_base.inputs["Fac"].default_value = 1.0
+    nt.links.new(surf_col_sock, cel_base.inputs[1])
+    nt.links.new(shade_ramp.outputs["Color"], cel_base.inputs[2])
+
+    # Add crisp white metallic specular glint on chrome/metals
+    if surf == "chrome" or spec_strength >= 0.6:
+        glint_ramp = nt.nodes.new("ShaderNodeValToRGB")
+        glint_ramp.location = (-120, 440)
+        glint_ramp.color_ramp.interpolation = "CONSTANT"
+        glint_ramp.color_ramp.elements[0].position = 0.0
+        glint_ramp.color_ramp.elements[0].color = (0.0, 0.0, 0.0, 1.0)
+        glint_ramp.color_ramp.elements[1].position = 0.82
+        g_amt = 0.22 * max(spec_strength, 0.65)
+        glint_ramp.color_ramp.elements[1].color = (g_amt, g_amt * 1.02, g_amt * 1.06, 1.0)
+        nt.links.new(s2rgb.outputs["Color"], glint_ramp.inputs["Fac"])
+
+        add_sp = nt.nodes.new("ShaderNodeMixRGB")
+        add_sp.blend_type = "ADD"
+        add_sp.use_clamp = True
+        add_sp.location = (360, 220)
+        add_sp.inputs["Fac"].default_value = 1.0
+        nt.links.new(cel_base.outputs["Color"], add_sp.inputs[1])
+        nt.links.new(glint_ramp.outputs["Color"], add_sp.inputs[2])
+        shaded_sock = add_sp.outputs["Color"]
+    else:
+        shaded_sock = cel_base.outputs["Color"]
+
+    # 3) Multiply Ambient Occlusion for deep crevice & contact dirt
+    if ao_strength > 0.02:
+        ao_sock = _build_ao_factor_socket(nt, loc_x=80, loc_y=-140, strength=ao_strength)
+        mul_ao = nt.nodes.new("ShaderNodeMixRGB")
+        mul_ao.blend_type = "MULTIPLY"
+        mul_ao.use_clamp = True
+        mul_ao.location = (560, 120)
+        mul_ao.inputs["Fac"].default_value = 1.0
+        nt.links.new(shaded_sock, mul_ao.inputs[1])
+        nt.links.new(ao_sock, mul_ao.inputs[2])
+        ao_shaded_sock = mul_ao.outputs["Color"]
+    else:
+        ao_shaded_sock = shaded_sock
+
+    # 4) Selective Welding-Arc Cyan-Blue Bounce Detector
     sep_rgb = nt.nodes.new("ShaderNodeSeparateXYZ")
-    sep_rgb.location = (-460, -100)
+    sep_rgb.location = (-240, -380)
     nt.links.new(s2rgb.outputs["Color"], sep_rgb.inputs["Vector"])
 
     mul_r = nt.nodes.new("ShaderNodeMath")
     mul_r.operation = "MULTIPLY"
-    mul_r.location = (-260, -60)
+    mul_r.location = (-60, -340)
     mul_r.inputs[1].default_value = 0.88
     nt.links.new(sep_rgb.outputs["X"], mul_r.inputs[0])
 
     blue_diff = nt.nodes.new("ShaderNodeMath")
     blue_diff.operation = "SUBTRACT"
-    blue_diff.location = (-80, -100)
+    blue_diff.location = (120, -380)
     nt.links.new(sep_rgb.outputs["Z"], blue_diff.inputs[0])
     nt.links.new(mul_r.outputs["Value"], blue_diff.inputs[1])
 
     arc_ramp = nt.nodes.new("ShaderNodeValToRGB")
-    arc_ramp.location = (120, -100)
+    arc_ramp.location = (320, -380)
     arc_ramp.color_ramp.interpolation = "CONSTANT"
     arc_ramp.color_ramp.elements[0].position = 0.0
     arc_ramp.color_ramp.elements[0].color = (0.0, 0.0, 0.0, 1.0)
     arc_ramp.color_ramp.elements[1].position = 0.14
     arc_col = hex_to_rgba("#38C0FF")
-    arc_str = 0.36 * colored_light_mix
+    arc_str = 0.34 * colored_light_mix
     arc_ramp.color_ramp.elements[1].color = (arc_col[0] * arc_str, arc_col[1] * arc_str, arc_col[2] * arc_str, 1.0)
     e_arc2 = arc_ramp.color_ramp.elements.new(0.45)
-    e_arc2.color = (arc_col[0] * arc_str * 1.65, arc_col[1] * arc_str * 1.65, arc_col[2] * arc_str * 1.65, 1.0)
+    e_arc2.color = (arc_col[0] * arc_str * 1.6, arc_col[1] * arc_str * 1.6, arc_col[2] * arc_str * 1.6, 1.0)
     nt.links.new(blue_diff.outputs["Value"], arc_ramp.inputs["Fac"])
 
     add_arc = nt.nodes.new("ShaderNodeMixRGB")
     add_arc.blend_type = "ADD"
     add_arc.use_clamp = True
-    add_arc.location = (460, 120)
+    add_arc.location = (820, 80)
     add_arc.inputs["Fac"].default_value = 1.0
-    nt.links.new(ramp.outputs["Color"], add_arc.inputs[1])
+    nt.links.new(ao_shaded_sock, add_arc.inputs[1])
     nt.links.new(arc_ramp.outputs["Color"], add_arc.inputs[2])
 
-    # 3) Subtle Stepped Grazing Rim Accent (clamped so it never blows out!)
-    if rim_strength > 0.02:
-        layer_w = nt.nodes.new("ShaderNodeLayerWeight")
-        layer_w.location = (120, -320)
-        layer_w.inputs["Blend"].default_value = 0.22
-
-        rim_ramp = nt.nodes.new("ShaderNodeValToRGB")
-        rim_ramp.location = (340, -320)
-        rim_ramp.color_ramp.interpolation = "CONSTANT"
-        rim_ramp.color_ramp.elements[0].position = 0.0
-        rim_ramp.color_ramp.elements[0].color = (0.0, 0.0, 0.0, 1.0)
-        rim_ramp.color_ramp.elements[1].position = 0.74
-        rim_tint = _scale_rgba(base_rgba, 0.35, tint_white=rim_strength * 0.28)
-        rim_ramp.color_ramp.elements[1].color = (
-            rim_tint[0] * rim_strength,
-            rim_tint[1] * rim_strength * 1.08,
-            rim_tint[2] * rim_strength * 1.22,
-            1.0,
-        )
-        nt.links.new(layer_w.outputs["Facing"], rim_ramp.inputs["Fac"])
-
-        add_rim = nt.nodes.new("ShaderNodeMixRGB")
-        add_rim.blend_type = "ADD"
-        add_rim.use_clamp = True
-        add_rim.location = (680, 60)
-        add_rim.inputs["Fac"].default_value = 1.0
-        nt.links.new(add_arc.outputs["Color"], add_rim.inputs[1])
-        nt.links.new(rim_ramp.outputs["Color"], add_rim.inputs[2])
-        final_col_out = add_rim.outputs["Color"]
-    else:
-        final_col_out = add_arc.outputs["Color"]
-
     emis_out = nt.nodes.new("ShaderNodeEmission")
-    emis_out.location = (880, 0)
+    emis_out.location = (1080, 0)
     emis_out.inputs["Strength"].default_value = 1.0
-    nt.links.new(final_col_out, emis_out.inputs["Color"])
+    nt.links.new(add_arc.outputs["Color"], emis_out.inputs["Color"])
     nt.links.new(emis_out.outputs["Emission"], out.inputs["Surface"])
 
     return mat
+
+
+def upgrade_glb_material_to_cel(mat: bpy.types.Material) -> None:
+    """
+    Convert an imported GLTF/GLB PBR material (`car_reference.glb`) into a stylized
+    Textured Cel-Shaded + AO + Stepped Specular + Welding-Arc-Bounce material while
+    preserving its embedded `baseColorTexture` image datablock!
+    """
+    if mat is None or mat.get("_cel_upgraded"):
+        return
+    mat["_cel_upgraded"] = True
+    mat.use_nodes = True
+    nt = mat.node_tree
+
+    low_name = mat.name.lower()
+
+    # Preserve embedded baseColorTexture image if present
+    base_img: Optional[bpy.types.Image] = None
+    for nd in nt.nodes:
+        if nd.type == "TEX_IMAGE" and getattr(nd, "image", None) is not None:
+            # Prefer textures wired to Base Color or the first image texture
+            for lk in nt.links:
+                if lk.from_node == nd and "Base Color" in lk.to_socket.name:
+                    base_img = nd.image
+                    break
+            if base_img is None:
+                base_img = nd.image
+
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    out.location = (1080, 0)
+
+    # Stylized Automotive Glass (tinted dark slate-blue with crisp diagonal cel reflection!)
+    if "glass" in low_name or "window" in low_name:
+        bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+        bsdf.location = (-520, 120)
+        bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+        bsdf.inputs["Roughness"].default_value = 0.12
+
+        s2rgb = nt.nodes.new("ShaderNodeShaderToRGB")
+        s2rgb.location = (-260, 120)
+        nt.links.new(bsdf.outputs["BSDF"], s2rgb.inputs["Shader"])
+
+        g_ramp = nt.nodes.new("ShaderNodeValToRGB")
+        g_ramp.location = (0, 120)
+        g_ramp.color_ramp.interpolation = "CONSTANT"
+        g_ramp.color_ramp.elements[0].position = 0.0
+        g_ramp.color_ramp.elements[0].color = hex_to_rgba("#182432")
+        g_ramp.color_ramp.elements[1].position = 0.25
+        g_ramp.color_ramp.elements[1].color = hex_to_rgba("#2B4358")
+        e_glint = g_ramp.color_ramp.elements.new(0.68)
+        e_glint.color = hex_to_rgba("#7CA8C8")
+        nt.links.new(s2rgb.outputs["Color"], g_ramp.inputs["Fac"])
+
+        emis = nt.nodes.new("ShaderNodeEmission")
+        emis.location = (420, 80)
+        emis.inputs["Strength"].default_value = 1.0
+        nt.links.new(g_ramp.outputs["Color"], emis.inputs["Color"])
+        nt.links.new(emis.outputs["Emission"], out.inputs["Surface"])
+        return
+
+    # Headlights / Taillights subtle cel-glow
+    is_front_light = "lights_front" in low_name or "fog_light" in low_name
+    is_tail_light = "taillight" in low_name
+
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (-680, -80)
+    bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    bsdf.inputs["Roughness"].default_value = 0.32
+
+    s2rgb = nt.nodes.new("ShaderNodeShaderToRGB")
+    s2rgb.location = (-420, -80)
+    nt.links.new(bsdf.outputs["BSDF"], s2rgb.inputs["Shader"])
+
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    ramp.location = (-160, -40)
+    ramp.color_ramp.interpolation = "CONSTANT"
+    ramp.color_ramp.elements[0].position = 0.0
+    ramp.color_ramp.elements[0].color = (0.44, 0.43, 0.47, 1.0)
+    ramp.color_ramp.elements[1].position = 0.14
+    ramp.color_ramp.elements[1].color = (0.88, 0.88, 0.88, 1.0)
+    e_hi = ramp.color_ramp.elements.new(0.50)
+    e_hi.color = (1.04, 1.04, 1.04, 1.0)
+    nt.links.new(s2rgb.outputs["Color"], ramp.inputs["Fac"])
+
+    if base_img is not None:
+        tex = nt.nodes.new("ShaderNodeTexImage")
+        tex.location = (-680, 260)
+        tex.image = base_img
+        color_src = tex.outputs["Color"]
+    else:
+        rgb = nt.nodes.new("ShaderNodeRGB")
+        rgb.location = (-680, 260)
+        rgb.outputs[0].default_value = hex_to_rgba(PALETTE_HEX["car_body_teal"])
+        color_src = rgb.outputs[0]
+
+    # Subtle procedural paint wear / micro-grime variation
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    tc.location = (-900, 120)
+    wear_noise = nt.nodes.new("ShaderNodeTexNoise")
+    wear_noise.location = (-680, 80)
+    wear_noise.inputs["Scale"].default_value = 9.0
+    wear_noise.inputs["Detail"].default_value = 5.0
+    nt.links.new(tc.outputs["Object"], wear_noise.inputs["Vector"])
+
+    wear_mix = nt.nodes.new("ShaderNodeMixRGB")
+    wear_mix.blend_type = "MULTIPLY"
+    wear_mix.location = (-360, 220)
+    wear_mix.inputs["Fac"].default_value = 0.14
+    nt.links.new(color_src, wear_mix.inputs[1])
+    nt.links.new(wear_noise.outputs["Fac"], wear_mix.inputs[2])
+
+    mul_cel = nt.nodes.new("ShaderNodeMixRGB")
+    mul_cel.blend_type = "MULTIPLY"
+    mul_cel.use_clamp = True
+    mul_cel.location = (160, 140)
+    mul_cel.inputs["Fac"].default_value = 1.0
+    nt.links.new(wear_mix.outputs["Color"], mul_cel.inputs[1])
+    nt.links.new(ramp.outputs["Color"], mul_cel.inputs[2])
+
+    # Multiply AO for deep wheel-well, door-seam, and grille shadows!
+    ao_sock = _build_ao_factor_socket(nt, loc_x=-140, loc_y=-280, strength=0.48)
+    mul_ao = nt.nodes.new("ShaderNodeMixRGB")
+    mul_ao.blend_type = "MULTIPLY"
+    mul_ao.use_clamp = True
+    mul_ao.location = (420, 120)
+    mul_ao.inputs["Fac"].default_value = 1.0
+    nt.links.new(mul_cel.outputs["Color"], mul_ao.inputs[1])
+    nt.links.new(ao_sock, mul_ao.inputs[2])
+
+    # Add Welding-Arc Cyan-Blue Bounce so the car fender reacts to the welding torch!
+    sep_rgb = nt.nodes.new("ShaderNodeSeparateXYZ")
+    sep_rgb.location = (-140, -480)
+    nt.links.new(s2rgb.outputs["Color"], sep_rgb.inputs["Vector"])
+    mul_r = nt.nodes.new("ShaderNodeMath")
+    mul_r.operation = "MULTIPLY"
+    mul_r.location = (40, -440)
+    mul_r.inputs[1].default_value = 0.88
+    nt.links.new(sep_rgb.outputs["X"], mul_r.inputs[0])
+    blue_diff = nt.nodes.new("ShaderNodeMath")
+    blue_diff.operation = "SUBTRACT"
+    blue_diff.location = (220, -480)
+    nt.links.new(sep_rgb.outputs["Z"], blue_diff.inputs[0])
+    nt.links.new(mul_r.outputs["Value"], blue_diff.inputs[1])
+
+    arc_ramp = nt.nodes.new("ShaderNodeValToRGB")
+    arc_ramp.location = (400, -480)
+    arc_ramp.color_ramp.interpolation = "CONSTANT"
+    arc_ramp.color_ramp.elements[0].position = 0.0
+    arc_ramp.color_ramp.elements[0].color = (0.0, 0.0, 0.0, 1.0)
+    arc_ramp.color_ramp.elements[1].position = 0.14
+    arc_col = hex_to_rgba("#38C0FF")
+    arc_ramp.color_ramp.elements[1].color = (arc_col[0] * 0.25, arc_col[1] * 0.25, arc_col[2] * 0.25, 1.0)
+    nt.links.new(blue_diff.outputs["Value"], arc_ramp.inputs["Fac"])
+
+    add_arc = nt.nodes.new("ShaderNodeMixRGB")
+    add_arc.blend_type = "ADD"
+    add_arc.use_clamp = True
+    add_arc.location = (680, 100)
+    add_arc.inputs["Fac"].default_value = 1.0
+    nt.links.new(mul_ao.outputs["Color"], add_arc.inputs[1])
+    nt.links.new(arc_ramp.outputs["Color"], add_arc.inputs[2])
+
+    emis = nt.nodes.new("ShaderNodeEmission")
+    emis.location = (880, 40)
+    emis.inputs["Strength"].default_value = 1.35 if (is_front_light or is_tail_light) else 1.0
+    nt.links.new(add_arc.outputs["Color"], emis.inputs["Color"])
+    nt.links.new(emis.outputs["Emission"], out.inputs["Surface"])
 
 
 def get_textured_cel_material(
     name: str,
     image_path: str,
     alpha_cutout: bool = False,
-    shadow_floor: float = 0.52,
-    lit_ceiling: float = 1.02,
-    colored_light_mix: float = 0.50,
+    shadow_floor: float = 0.48,
+    lit_ceiling: float = 1.00,
+    emissive_boost: float = 1.0,
 ) -> bpy.types.Material:
     """
-    Cel-shaded material driven by a high-res RGBA texture (e.g. marker-bird back patch),
-    clamped cleanly so colors never clip.
+    Cel-shaded material driven by a 2D Pillow Decal PNG (`generated_textures/*.png`)
+    with stepped shadow response and crisp readability.
     """
     if name in bpy.data.materials:
         return bpy.data.materials[name]
@@ -289,11 +632,6 @@ def get_textured_cel_material(
                 mat.blend_method = "CLIP"
             except Exception:
                 pass
-        if hasattr(mat, "shadow_method"):
-            try:
-                mat.shadow_method = "CLIP"
-            except Exception:
-                pass
         mat.use_backface_culling = False
 
     nt = mat.node_tree
@@ -304,9 +642,10 @@ def get_textured_cel_material(
 
     tex = nt.nodes.new("ShaderNodeTexImage")
     tex.location = (-520, 240)
-    img = bpy.data.images.load(image_path, check_existing=True)
-    tex.image = img
-    tex.extension = "CLIP" if alpha_cutout else "EXTEND"
+    if Path(image_path).exists():
+        img = bpy.data.images.load(str(Path(image_path).resolve()), check_existing=True)
+        tex.image = img
+    tex.extension = "REPEAT" if "stripe" in name.lower() else ("CLIP" if alpha_cutout else "EXTEND")
 
     bsdf = nt.nodes.new("ShaderNodeBsdfDiffuse")
     bsdf.location = (-520, -60)
@@ -320,10 +659,10 @@ def get_textured_cel_material(
     ramp.location = (-40, -20)
     ramp.color_ramp.interpolation = "CONSTANT"
     ramp.color_ramp.elements[0].position = 0.0
-    ramp.color_ramp.elements[0].color = (shadow_floor, shadow_floor * 0.96, shadow_floor * 1.02, 1.0)
-    ramp.color_ramp.elements[1].position = 0.16
-    ramp.color_ramp.elements[1].color = (0.94, 0.94, 0.94, 1.0)
-    e_hi = ramp.color_ramp.elements.new(0.52)
+    ramp.color_ramp.elements[0].color = (shadow_floor, shadow_floor * 0.98, shadow_floor * 1.02, 1.0)
+    ramp.color_ramp.elements[1].position = 0.14
+    ramp.color_ramp.elements[1].color = (0.90, 0.90, 0.90, 1.0)
+    e_hi = ramp.color_ramp.elements.new(0.48)
     e_hi.color = (lit_ceiling, lit_ceiling, lit_ceiling, 1.0)
     nt.links.new(s2rgb.outputs["Color"], ramp.inputs["Fac"])
 
@@ -337,7 +676,7 @@ def get_textured_cel_material(
 
     emis = nt.nodes.new("ShaderNodeEmission")
     emis.location = (560, 120)
-    emis.inputs["Strength"].default_value = 1.0
+    emis.inputs["Strength"].default_value = emissive_boost
     nt.links.new(mul.outputs["Color"], emis.inputs["Color"])
 
     if alpha_cutout:
@@ -378,11 +717,7 @@ def get_emission_material(
 
 
 def create_weld_seam_material(name: str = "Mat_WeldSeam_Ember") -> Tuple[bpy.types.Material, bpy.types.Node, bpy.types.Node]:
-    """
-    Procedural glowing weld seam shader along curve U-coordinate (UV.x):
-      - `SeamProgress` (0.0 -> 1.0) reveals the laid weld bead from start to end.
-      - `SeamHeat` (1.0 while welding -> cools in Beat 4) drives molten orange-white glow.
-    """
+    """Procedural glowing weld seam shader along curve U-coordinate (UV.x)."""
     mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
     if hasattr(mat, "surface_render_method"):
