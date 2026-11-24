@@ -1,0 +1,484 @@
+"""
+vfx_lighting.py — Dramatic Workshop Lighting, Flickering Welding Arc Point Light,
+Plasma Core Starburst, Particle + Deterministic Bouncing Sparks & Cooling Weld Seam.
+"""
+
+from __future__ import annotations
+
+import math
+import random
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import bmesh
+import bpy
+from mathutils import Euler, Vector
+
+from config import (
+    FRAME_END,
+    PALETTE_HEX,
+    RANDOM_SEED,
+    WELD_ARC_END,
+    WELD_ARC_START,
+    WELD_SEAM_END,
+    WELD_SEAM_MID,
+    WELD_SEAM_START,
+    hex_to_rgb,
+    hex_to_rgba,
+)
+from env_props import get_or_create_collection, link_exclusively
+from shaders import get_emission_material
+
+
+def _get_action_fcurves(id_data: bpy.types.ID):
+    """Retrieve F-Curves compatibly across Blender 3.6, 4.2 LTS, and 4.4+ slotted actions."""
+    ad = getattr(id_data, "animation_data", None)
+    if ad is None or ad.action is None:
+        return []
+    act = ad.action
+    if hasattr(act, "fcurves"):
+        return act.fcurves
+    # Blender 4.4+ layered action fallback
+    if hasattr(act, "layers"):
+        for layer in act.layers:
+            for strip in getattr(layer, "strips", []):
+                for cb in getattr(strip, "channelbags", []):
+                    if hasattr(cb, "fcurves"):
+                        return cb.fcurves
+    return []
+
+
+def add_restricted_noise_modifier(
+    id_data: bpy.types.ID,
+    data_path: str,
+    frame_start: float,
+    frame_end: float,
+    scale: float = 1.5,
+    strength: float = 100.0,
+    phase: float = 0.0,
+    index: int = -1,
+) -> None:
+    """Attach an F-Curve NOISE modifier active strictly between [frame_start, frame_end]."""
+    for fc in _get_action_fcurves(id_data):
+        if fc.data_path == data_path and (index < 0 or fc.array_index == index):
+            mod = fc.modifiers.new(type="NOISE")
+            mod.scale = scale
+            mod.strength = strength
+            mod.phase = phase
+            mod.depth = 2
+            mod.use_restricted_range = True
+            mod.frame_start = frame_start
+            mod.frame_end = frame_end
+            mod.blend_in = 2.0
+            mod.blend_out = 2.0
+
+
+def eval_weld_seam_point(u: float) -> Vector:
+    """Quadratic Bezier interpolation along WELD_SEAM_START -> WELD_SEAM_MID -> WELD_SEAM_END."""
+    u = max(0.0, min(1.0, u))
+    p0 = Vector(WELD_SEAM_START)
+    p1 = Vector(WELD_SEAM_MID)
+    p2 = Vector(WELD_SEAM_END)
+    # Control point so curve passes right through p1 at u = 0.5: C = 2*p1 - 0.5*(p0 + p2)
+    ctrl = p1 * 2.0 - (p0 + p2) * 0.5
+    omt = 1.0 - u
+    return (omt * omt) * p0 + (2.0 * omt * u) * ctrl + (u * u) * p2
+
+
+def _setup_world_background(scene: bpy.types.Scene) -> None:
+    if scene.world is None:
+        scene.world = bpy.data.worlds.new("WorkshopWorld")
+    scene.world.use_nodes = True
+    nt = scene.world.node_tree
+    nt.nodes.clear()
+
+    out = nt.nodes.new("ShaderNodeOutputWorld")
+    out.location = (300, 0)
+    bg = nt.nodes.new("ShaderNodeBackground")
+    bg.location = (0, 0)
+    bg.inputs["Color"].default_value = hex_to_rgba("#1C2436")
+    bg.inputs["Strength"].default_value = 0.52
+    nt.links.new(bg.outputs["Background"], out.inputs["Surface"])
+
+
+def _create_area_light(
+    name: str,
+    col: bpy.types.Collection,
+    location: Tuple[float, float, float],
+    target_pt: Tuple[float, float, float],
+    energy: float,
+    hex_color: str,
+    size: float = 1.2,
+    cast_shadow: bool = True,
+) -> bpy.types.Object:
+    ldata = bpy.data.lights.new(name=name + "_Data", type="AREA")
+    ldata.energy = energy
+    ldata.color = hex_to_rgb(hex_color)
+    ldata.size = size
+    if hasattr(ldata, "use_shadow"):
+        ldata.use_shadow = cast_shadow
+
+    lobj = bpy.data.objects.new(name, ldata)
+    lobj.location = location
+    direction = (Vector(target_pt) - Vector(location)).normalized()
+    lobj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+    link_exclusively(lobj, col)
+    return lobj
+
+
+def build_lighting_and_vfx(
+    scene: bpy.types.Scene,
+    torch_tip_empty: bpy.types.Object,
+    seam_prog_node: bpy.types.Node,
+    seam_heat_node: bpy.types.Node,
+) -> Dict[str, Any]:
+    """
+    Create dramatic workshop 3-point cel lighting + dynamic Welding Arc Point Light,
+    arc plasma core, particle emitter + deterministic bouncing spark streaks, and
+    molten cooling weld seam animation.
+    """
+    _setup_world_background(scene)
+    vfx_col = get_or_create_collection("Col_VFX_Lighting")
+
+    # ==========================================================================
+    # 1. WORKSHOP DRAMATIC KEY, BAY & COOL RIM LIGHTS
+    # ==========================================================================
+    # Warm Overhead Key Light under main pendant lamp
+    key_light = _create_area_light(
+        "Light_Workshop_Key", vfx_col,
+        location=(-0.22, -0.78, 2.86),
+        target_pt=(-0.18, -0.65, 1.05),
+        energy=290.0,
+        hex_color="#FFD7A6",
+        size=1.35,
+        cast_shadow=True,
+    )
+
+    # Cool Rim Light behind-left of Mechanic & Car to separate silhouettes
+    rim_light = _create_area_light(
+        "Light_Workshop_CoolRim", vfx_col,
+        location=(-1.65, 0.95, 2.25),
+        target_pt=(-0.18, -0.88, 1.18),
+        energy=230.0,
+        hex_color="#66C6FF",
+        size=1.15,
+        cast_shadow=True,
+    )
+
+    # Left Bay Pendant Light (illuminates Workbench, Wrench Rack & Tool Chest in Beat 1)
+    bay_left = _create_area_light(
+        "Light_Workshop_BayLeft", vfx_col,
+        location=(-2.35, -0.95, 2.92),
+        target_pt=(-3.25, -1.10, 1.10),
+        energy=175.0,
+        hex_color="#FFE2B8",
+        size=1.20,
+        cast_shadow=False,
+    )
+
+    # Rear Garage Fill Light (carves out car fastback & background drums)
+    bay_back = _create_area_light(
+        "Light_Workshop_BayBack", vfx_col,
+        location=(1.85, 0.55, 2.92),
+        target_pt=(0.65, 0.35, 0.95),
+        energy=160.0,
+        hex_color="#CFE2FF",
+        size=1.40,
+        cast_shadow=False,
+    )
+
+    # Gentle Front Bounce Fill (shadowless, keeps dark cel-outlines & eyes clean)
+    front_fill = _create_area_light(
+        "Light_Mechanic_FrontFill", vfx_col,
+        location=(-0.35, -2.75, 1.35),
+        target_pt=(-0.18, -0.95, 1.15),
+        energy=65.0,
+        hex_color="#E8F0FF",
+        size=1.60,
+        cast_shadow=False,
+    )
+
+    # ==========================================================================
+    # 2. WELDING ARC FLICKERING POINT LIGHT (`Light_WeldArc`)
+    # ==========================================================================
+    arc_ldata = bpy.data.lights.new("Light_WeldArc_Data", type="POINT")
+    arc_ldata.color = hex_to_rgb(PALETTE_HEX["weld_arc_blue"])
+    arc_ldata.shadow_soft_size = 0.035
+    if hasattr(arc_ldata, "use_shadow"):
+        arc_ldata.use_shadow = True
+
+    arc_light = bpy.data.objects.new("Light_WeldArc", arc_ldata)
+    arc_light.parent = torch_tip_empty
+    # Slight -Y offset toward mechanic so light never clips inside the car panel
+    arc_light.location = (0.0, -0.022, 0.012)
+    link_exclusively(arc_light, vfx_col)
+
+    # Keyframe energy ONLY active during [WELD_ARC_START .. WELD_ARC_END] + F-Curve Noise!
+    for f, val in [
+        (1, 0.0),
+        (WELD_ARC_START - 1, 0.0),
+        (WELD_ARC_START, 220.0),
+        (WELD_ARC_END, 220.0),
+        (WELD_ARC_END + 1, 0.0),
+        (FRAME_END, 0.0),
+    ]:
+        arc_ldata.energy = val
+        arc_ldata.keyframe_insert(data_path="energy", frame=f)
+
+    for fc in _get_action_fcurves(arc_ldata):
+        for kp in fc.keyframe_points:
+            kp.interpolation = "CONSTANT" if kp.co.x in (1, WELD_ARC_START - 1, WELD_ARC_END + 1) else "LINEAR"
+
+    add_restricted_noise_modifier(
+        arc_ldata,
+        data_path="energy",
+        frame_start=float(WELD_ARC_START),
+        frame_end=float(WELD_ARC_END),
+        scale=1.25,
+        strength=165.0,
+        phase=7.3,
+    )
+
+    # Warm Orange Seam Ember Light (glows softly on the freshly welded seam & cools in Beat 4!)
+    ember_ldata = bpy.data.lights.new("Light_SeamEmber_Data", type="POINT")
+    ember_ldata.color = hex_to_rgb(PALETTE_HEX["seam_molten"])
+    ember_ldata.shadow_soft_size = 0.06
+    if hasattr(ember_ldata, "use_shadow"):
+        ember_ldata.use_shadow = False
+    ember_light = bpy.data.objects.new("Light_SeamEmber", ember_ldata)
+    ember_light.location = (WELD_SEAM_MID[0], WELD_SEAM_MID[1] - 0.04, WELD_SEAM_MID[2] + 0.02)
+    link_exclusively(ember_light, vfx_col)
+
+    for f, val in [
+        (1, 0.0),
+        (WELD_ARC_START, 0.0),
+        (WELD_ARC_START + 12, 16.0),
+        (WELD_ARC_END, 22.0),
+        (225, 11.0),
+        (245, 5.5),
+        (FRAME_END, 2.2),
+    ]:
+        ember_ldata.energy = val
+        ember_ldata.keyframe_insert(data_path="energy", frame=f)
+
+    # ==========================================================================
+    # 3. ARC PLASMA SPHERE & STARBURST FLARE AT TORCH TIP (`VFX_ArcCore`)
+    # ==========================================================================
+    mat_arc_core = get_emission_material("Mat_VFX_ArcCore", PALETTE_HEX["weld_arc_core"], strength=42.0)
+    mat_arc_flare = get_emission_material("Mat_VFX_ArcFlare", PALETTE_HEX["weld_arc_blue"], strength=22.0)
+
+    bm_core = bmesh.new()
+    bmesh.ops.create_icosphere(bm_core, subdivisions=2, radius=0.024)
+    # Add 3 intersecting starburst fins so the electric arc reads sharply at any camera angle!
+    for rot_ax in ((0.0, 0.0, 0.0), (0.0, math.pi / 3.0, 0.4), (math.pi / 2.0, 0.3, -0.5)):
+        verts_f = [
+            bm_core.verts.new(Euler(rot_ax).to_matrix() @ Vector(co))
+            for co in ((-0.065, 0.0, 0.0), (0.0, 0.0, 0.011), (0.065, 0.0, 0.0), (0.0, 0.0, -0.011))
+        ]
+        bm_core.faces.new(verts_f)
+    arc_mesh = bpy.data.meshes.new("VFX_ArcCore_Mesh")
+    bm_core.to_mesh(arc_mesh)
+    bm_core.free()
+
+    arc_core_obj = bpy.data.objects.new("VFX_ArcCore", arc_mesh)
+    arc_core_obj.data.materials.append(mat_arc_core)
+    arc_core_obj.parent = torch_tip_empty
+    arc_core_obj.location = (0.0, 0.0, 0.0)
+    link_exclusively(arc_core_obj, vfx_col)
+
+    for f, sc in [
+        (1, (0.0, 0.0, 0.0)),
+        (WELD_ARC_START - 1, (0.0, 0.0, 0.0)),
+        (WELD_ARC_START, (1.0, 1.0, 1.0)),
+        (WELD_ARC_END, (1.0, 1.0, 1.0)),
+        (WELD_ARC_END + 1, (0.0, 0.0, 0.0)),
+        (FRAME_END, (0.0, 0.0, 0.0)),
+    ]:
+        arc_core_obj.scale = sc
+        arc_core_obj.keyframe_insert(data_path="scale", frame=f)
+
+    for ax_i in range(3):
+        add_restricted_noise_modifier(
+            arc_core_obj,
+            data_path="scale",
+            frame_start=float(WELD_ARC_START),
+            frame_end=float(WELD_ARC_END),
+            scale=1.4,
+            strength=0.55,
+            phase=ax_i * 11.7,
+            index=ax_i,
+        )
+
+    # ==========================================================================
+    # 4. WELDING SPARKS: BLENDER PARTICLE SYSTEM + DETERMINISTIC BOUNCING STREAKS
+    # ==========================================================================
+    mat_spark_hot = get_emission_material("Mat_VFX_SparkHot", "#FFF2A6", strength=28.0)
+    mat_spark_org = get_emission_material("Mat_VFX_SparkOrange", "#FF8E26", strength=22.0)
+
+    # Prototype spark mesh for Blender Particle System (hidden far below floor)
+    bm_sp = bmesh.new()
+    bmesh.ops.create_icosphere(bm_sp, subdivisions=1, radius=1.0)
+    bmesh.ops.scale(bm_sp, vec=(0.005, 0.032, 0.005), verts=bm_sp.verts)
+    sp_proto_mesh = bpy.data.meshes.new("VFX_SparkProto_Mesh")
+    bm_sp.to_mesh(sp_proto_mesh)
+    bm_sp.free()
+    sp_proto_obj = bpy.data.objects.new("VFX_SparkProto", sp_proto_mesh)
+    sp_proto_obj.data.materials.append(mat_spark_hot)
+    sp_proto_obj.location = (0.0, 0.0, -5.0)
+    link_exclusively(sp_proto_obj, vfx_col)
+
+    # Emitter mesh at Torch Tip with Blender Particle System (interacts with Collision modifiers!)
+    bm_em = bmesh.new()
+    bmesh.ops.create_icosphere(bm_em, subdivisions=1, radius=0.008)
+    em_mesh = bpy.data.meshes.new("VFX_SparkEmitter_Mesh")
+    bm_em.to_mesh(em_mesh)
+    bm_em.free()
+    em_obj = bpy.data.objects.new("VFX_SparkEmitter", em_mesh)
+    em_obj.parent = torch_tip_empty
+    em_obj.location = (0.0, -0.006, 0.0)
+    link_exclusively(em_obj, vfx_col)
+
+    ps_mod = em_obj.modifiers.new(name="WeldSparksPSys", type="PARTICLE_SYSTEM")
+    psys = ps_mod.particle_system
+    pset = psys.settings
+    pset.count = 340
+    pset.frame_start = float(WELD_ARC_START)
+    pset.frame_end = float(WELD_ARC_END)
+    pset.lifetime = 22.0
+    pset.lifetime_random = 0.35
+    pset.emit_from = "FACE"
+    pset.normal_factor = 2.6
+    pset.factor_random = 1.8
+    pset.render_type = "OBJECT"
+    pset.instance_object = sp_proto_obj
+    pset.particle_size = 0.85
+    pset.size_random = 0.45
+    pset.use_rotations = True
+    pset.rotation_mode = "VEL"
+    em_obj.show_instancer_for_render = False
+    em_obj.show_instancer_for_viewport = False
+
+    # Deterministic Keyframed Ballistic Spark Streaks with Fender & Floor Collision Bounces!
+    # Ensures 100% consistent spark showers in random-access diagnostic renders (Frame 155)
+    # and sharded parallel CI workers without needing sequential particle cache pre-roll!
+    rng = random.Random(RANDOM_SEED + 155)
+    num_streaks = 44
+    dt = 1.0 / 24.0
+    gravity = Vector((0.0, 0.0, -9.2))
+    fender_y = -0.445  # Car fender plane normal = (0, -1, 0)
+
+    streak_objs: List[bpy.types.Object] = []
+    for s_idx in range(num_streaks):
+        bm_st = bmesh.new()
+        bmesh.ops.create_icosphere(bm_st, subdivisions=1, radius=1.0)
+        bmesh.ops.scale(bm_st, vec=(0.0055, 0.042, 0.0055), verts=bm_st.verts)
+        st_mesh = bpy.data.meshes.new(f"VFX_SparkStreak_{s_idx:02d}_Mesh")
+        bm_st.to_mesh(st_mesh)
+        bm_st.free()
+        st_obj = bpy.data.objects.new(f"VFX_SparkStreak_{s_idx:02d}", st_mesh)
+        st_obj.data.materials.append(mat_spark_hot if s_idx % 2 == 0 else mat_spark_org)
+        link_exclusively(st_obj, vfx_col)
+        streak_objs.append(st_obj)
+
+        # Hide before welding starts
+        st_obj.scale = (0.0, 0.0, 0.0)
+        st_obj.keyframe_insert(data_path="scale", frame=1)
+        st_obj.keyframe_insert(data_path="scale", frame=WELD_ARC_START - 1)
+
+        # Staggered repeating bursts across [WELD_ARC_START .. WELD_ARC_END]
+        life_frames = rng.randint(10, 17)
+        first_birth = WELD_ARC_START + (s_idx % 12)
+        f_cur = first_birth
+        while f_cur <= WELD_ARC_END:
+            u_seam = (f_cur - WELD_ARC_START) / max(1.0, float(WELD_ARC_END - WELD_ARC_START))
+            pos = eval_weld_seam_point(u_seam) + Vector((0.0, -0.006, 0.0))
+
+            # Initial spray velocity: outward (-Y toward workshop), sideways (±X), and upward/downward
+            vx = rng.uniform(-2.3, 2.3)
+            vy = rng.uniform(-2.6, 0.45)  # Some hit fender (+Y) and bounce back!
+            vz = rng.uniform(0.35, 2.55)
+            vel = Vector((vx, vy, vz))
+
+            for age in range(life_frames + 1):
+                frame_k = f_cur + age
+                if frame_k > WELD_ARC_END + 14:
+                    break
+
+                if age == 0:
+                    sc_val = rng.uniform(0.85, 1.45)
+                elif age >= life_frames:
+                    sc_val = 0.0
+                else:
+                    sc_val = (1.0 - (age / float(life_frames)) ** 1.6) * 1.25
+
+                speed = vel.length
+                stretch = min(2.2, max(0.5, speed * 0.42))
+                st_obj.location = pos
+                if speed > 1e-4:
+                    st_obj.rotation_euler = vel.normalized().to_track_quat("Y", "Z").to_euler()
+                st_obj.scale = (sc_val, sc_val * stretch, sc_val)
+
+                st_obj.keyframe_insert(data_path="location", frame=frame_k)
+                st_obj.keyframe_insert(data_path="rotation_euler", frame=frame_k)
+                st_obj.keyframe_insert(data_path="scale", frame=frame_k)
+
+                # Integrate ballistic motion + Fender & Floor Collision Bounce!
+                vel = vel + gravity * dt
+                pos = pos + vel * dt
+
+                # Bounce off Car Fender panel (if in X/Z bounds of fender and Y > fender_y)
+                if -0.62 <= pos.x <= 0.16 and 0.40 <= pos.z <= 1.08 and pos.y > fender_y:
+                    pos.y = fender_y - 0.005
+                    vel.y = -abs(vel.y) * 0.58
+                    vel.x *= 0.82
+                    vel.z *= 0.82
+
+                # Bounce off Workshop Concrete Floor (Z = 0.008)
+                if pos.z < 0.008:
+                    pos.z = 0.008
+                    vel.z = abs(vel.z) * 0.46
+                    vel.x *= 0.72
+                    vel.y *= 0.72
+
+            f_cur += life_frames + rng.randint(1, 4)
+
+        st_obj.scale = (0.0, 0.0, 0.0)
+        st_obj.keyframe_insert(data_path="scale", frame=WELD_ARC_END + 15)
+        st_obj.keyframe_insert(data_path="scale", frame=FRAME_END)
+
+    # ==========================================================================
+    # 5. ANIMATE MOLTEN WELD SEAM REVEAL & COOLING EMBER GLOW
+    # ==========================================================================
+    p_sock = seam_prog_node.outputs[0]
+    for f, pv in [
+        (1, 0.0),
+        (WELD_ARC_START - 1, 0.0),
+        (WELD_ARC_START, 0.03),
+        (WELD_ARC_END, 1.0),
+        (FRAME_END, 1.0),
+    ]:
+        p_sock.default_value = pv
+        p_sock.keyframe_insert(data_path="default_value", frame=f)
+
+    h_sock = seam_heat_node.outputs[0]
+    for f, hv in [
+        (1, 0.0),
+        (WELD_ARC_START - 1, 0.0),
+        (WELD_ARC_START, 1.0),
+        (WELD_ARC_END, 1.0),
+        (215, 0.78),
+        (240, 0.52),  # Warm orange ember glow still clearly visible in Payoff Beat 4!
+        (FRAME_END, 0.28),
+    ]:
+        h_sock.default_value = hv
+        h_sock.keyframe_insert(data_path="default_value", frame=f)
+
+    return {
+        "vfx_collection": vfx_col,
+        "key_light": key_light,
+        "rim_light": rim_light,
+        "arc_light": arc_light,
+        "ember_light": ember_light,
+        "arc_core_obj": arc_core_obj,
+        "spark_emitter": em_obj,
+        "spark_streaks": streak_objs,
+    }

@@ -1,0 +1,205 @@
+name: Render Mechanic Welding 3D Animation (Blender 4.2 LTS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Render mode (debug = 4 diagnostic frames + .blend, final = full 1080p 264f MP4 + .blend)"
+        required: true
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - final
+
+permissions:
+  contents: write
+
+env:
+  BLENDER_VERSION: "4.2.16"
+  BLENDER_SERIES: "4.2"
+  BLENDER_DIR: "/tmp/blender-4.2.16-linux-x64"
+
+jobs:
+  debug-and-blend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install headless OpenGL (Xvfb + Mesa) & FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            xvfb libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libxi6 \
+            libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libice6 \
+            libglu1-mesa ffmpeg xz-utils
+
+      - name: Cache Blender ${{ env.BLENDER_VERSION }} LTS
+        id: cache-blender
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BLENDER_DIR }}
+          key: blender-linux-${{ env.BLENDER_VERSION }}
+
+      - name: Download & extract Blender ${{ env.BLENDER_VERSION }} LTS
+        if: steps.cache-blender.outputs.cache-hit != 'true'
+        run: |
+          FILE="blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          MIRRORS=(
+            "https://ftp.nluug.nl/pub/graphics/blender/release/Blender${BLENDER_SERIES}/${FILE}"
+            "https://mirrors.ocf.berkeley.edu/blender/release/Blender${BLENDER_SERIES}/${FILE}"
+            "https://mirror.clarkson.edu/blender/release/Blender${BLENDER_SERIES}/${FILE}"
+            "https://download.blender.org/release/Blender${BLENDER_SERIES}/${FILE}"
+          )
+          ok=0
+          for URL in "${MIRRORS[@]}"; do
+            echo "Trying mirror: $URL"
+            if curl -fSL --retry 3 --retry-delay 4 -A "Mozilla/5.0" "$URL" -o "/tmp/blender.tar.xz"; then
+              ok=1
+              break
+            fi
+          done
+          [ "$ok" -eq 1 ] || exit 1
+          tar -xf "/tmp/blender.tar.xz" -C "/tmp"
+          rm -f "/tmp/blender.tar.xz"
+
+      - name: Run Blender Headless Diagnostic & Save .blend
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: "llvmpipe"
+          MESA_GL_VERSION_OVERRIDE: "4.5"
+        run: |
+          "${{ env.BLENDER_DIR }}/blender" --version
+          xvfb-run -a -s "-screen 0 1280x1024x24" \
+            "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
+            --python main.py -- --mode debug --fast-ci
+
+      - name: Upload Diagnostic Frames, Report & .blend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-verification-bundle
+          path: |
+            output/debug_frames/*.png
+            output/verification_report.json
+            output/mechanic_scene.blend
+          if-no-files-found: error
+          retention-days: 14
+
+  render-shards:
+    needs: [debug-and-blend]
+    if: ${{ inputs.mode == 'final' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install headless OpenGL (Xvfb + Mesa)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            xvfb libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libxi6 \
+            libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libice6 \
+            libglu1-mesa xz-utils
+
+      - name: Cache Blender ${{ env.BLENDER_VERSION }} LTS
+        id: cache-blender
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BLENDER_DIR }}
+          key: blender-linux-${{ env.BLENDER_VERSION }}
+
+      - name: Download & extract Blender ${{ env.BLENDER_VERSION }} LTS (fallback)
+        if: steps.cache-blender.outputs.cache-hit != 'true'
+        run: |
+          FILE="blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          MIRRORS=(
+            "https://ftp.nluug.nl/pub/graphics/blender/release/Blender${BLENDER_SERIES}/${FILE}"
+            "https://mirrors.ocf.berkeley.edu/blender/release/Blender${BLENDER_SERIES}/${FILE}"
+            "https://mirror.clarkson.edu/blender/release/Blender${BLENDER_SERIES}/${FILE}"
+            "https://download.blender.org/release/Blender${BLENDER_SERIES}/${FILE}"
+          )
+          ok=0
+          for URL in "${MIRRORS[@]}"; do
+            if curl -fSL --retry 3 --retry-delay 4 -A "Mozilla/5.0" "$URL" -o "/tmp/blender.tar.xz"; then
+              ok=1
+              break
+            fi
+          done
+          [ "$ok" -eq 1 ] || exit 1
+          tar -xf "/tmp/blender.tar.xz" -C "/tmp"
+          rm -f "/tmp/blender.tar.xz"
+
+      - name: Render 1920x1080 Shard ${{ matrix.shard }}/8 (33 Frames @ 24 FPS)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: "llvmpipe"
+          MESA_GL_VERSION_OVERRIDE: "4.5"
+        run: |
+          SHARD=${{ matrix.shard }}
+          START=$(( (SHARD - 1) * 33 + 1 ))
+          END=$(( SHARD * 33 ))
+          echo "Rendering Shard $SHARD: frames $START .. $END"
+          xvfb-run -a -s "-screen 0 1280x1024x24" \
+            "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
+            --python main.py -- \
+            --mode shard --start "$START" --end "$END" \
+            --width 1920 --height 1080 --samples 8 --fast-ci
+
+      - name: Upload Shard ${{ matrix.shard }} PNG Frames
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-shard-${{ matrix.shard }}
+          path: output/frames/frame_*.png
+          if-no-files-found: error
+          retention-days: 3
+
+  encode-final-mp4:
+    needs: [debug-and-blend, render-shards]
+    if: ${{ inputs.mode == 'final' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg
+
+      - name: Download All 8 Frame Shards (264 Frames)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: frames-shard-*
+          merge-multiple: true
+          path: output/frames
+
+      - name: Download Scene .blend & Debug Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: debug-verification-bundle
+          path: output
+
+      - name: Encode 1920x1080 24 FPS H.264 MP4 & Verify Streams
+        run: |
+          COUNT=$(ls -1 output/frames/frame_*.png | wc -l)
+          echo "Total rendered frames: $COUNT"
+          [ "$COUNT" -eq 264 ] || (echo "Expected 264 frames, got $COUNT!" && exit 1)
+          ffmpeg -y -framerate 24 -start_number 1 \
+            -i output/frames/frame_%04d.png \
+            -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart \
+            output/mechanic_welding_final.mp4
+          ffprobe -v error -show_format -show_streams output/mechanic_welding_final.mp4
+
+      - name: Upload Final MP4, .blend & Debug Frames Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: mechanic-welding-final-bundle
+          path: |
+            output/mechanic_welding_final.mp4
+            output/mechanic_scene.blend
+            output/debug_frames/*.png
+            output/verification_report.json
+          if-no-files-found: error
+          retention-days: 30
