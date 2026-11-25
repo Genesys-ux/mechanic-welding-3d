@@ -236,27 +236,50 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install FFmpeg, Fonts & edge-tts for Indonesian Narration
+      - name: Install FFmpeg & Fonts
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends ffmpeg fonts-dejavu-core
-          pip install edge-tts
-      - name: Generate Synced 75s Indonesian Narration, SFX & Captions
-        run: python short_75s/generate_narration_audio.py
+      - name: Prepare ElevenLabs Voiceover + Free BGM/SFX & Captions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, ".")
+          from short_75s.config_short import CAPTIONS_SRT_PATH
+          from short_75s.story_beats import NARRATION_BEATS
+          from short_75s.config_short import FPS
+          def fmt(sec):
+              ms = int(round(max(0.0, sec) * 1000))
+              return f"{ms//3600000:02d}:{(ms%3600000)//60000:02d}:{(ms%60000)//1000:02d},{ms%1000:03d}"
+          CAPTIONS_SRT_PATH.parent.mkdir(parents=True, exist_ok=True)
+          lines = [f"{i}\n{fmt((b['start_f']-1)/FPS)} --> {fmt(b['end_f']/FPS)}\n{b['caption']}\n" for i, b in enumerate(NARRATION_BEATS, 1)]
+          CAPTIONS_SRT_PATH.write_text("\n".join(lines), encoding="utf-8")
+          print("Wrote captions:", CAPTIONS_SRT_PATH)
+          PY
+          if [ -f assets/short_75s_voiceover_mix.mp3 ]; then
+            cp assets/short_75s_voiceover_mix.mp3 output_short_75s/narration_mix.mp3
+          elif [ -f assets/short_75s_voiceover_mix.wav ]; then
+            cp assets/short_75s_voiceover_mix.wav output_short_75s/narration_mix.wav
+          else
+            echo "Missing prebuilt ElevenLabs voiceover audio!" && exit 1
+          fi
       - name: Download all 30 rendered frame shards (1,800 frames)
         uses: actions/download-artifact@v4
         with:
           pattern: short-final-shard-*
           merge-multiple: true
           path: merged_short_final
-      - name: Verify 1,800 frames & Encode 75s YouTube Short MP4 (9:16 + Narration + Captions)
+      - name: Verify 1,800 frames & Encode 75s YouTube Short MP4 (9:16 + ElevenLabs VO + Free BGM/SFX + Captions)
         run: |
           COUNT=$(ls -1 merged_short_final/frames/frame_*.png | wc -l)
           echo "Total rendered frames: ${COUNT}"
           [ "${COUNT}" -eq 1800 ] || exit 1
+          AUDIO_IN="output_short_75s/narration_mix.wav"
+          if [ -f output_short_75s/narration_mix.mp3 ]; then AUDIO_IN="output_short_75s/narration_mix.mp3"; fi
           mkdir -p final_short_out
           ffmpeg -y -framerate 24 -start_number 1 -i merged_short_final/frames/frame_%04d.png \
-            -i output_short_75s/narration_mix.wav \
+            -i "${AUDIO_IN}" \
             -vf "scale=1080:1920:flags=lanczos,subtitles=output_short_75s/captions.srt:force_style='FontName=DejaVu Sans,FontSize=15,Bold=1,PrimaryColour=&H0000EAFF,OutlineColour=&H00181218,Outline=2,Shadow=1,Alignment=2,MarginV=120'" \
             -c:v libx264 -pix_fmt yuv420p -crf 18 -preset slow -movflags +faststart \
             -c:a aac -b:a 192k -shortest \
