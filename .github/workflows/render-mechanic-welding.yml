@@ -185,28 +185,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { shard: 1,  start: 1,   end: 12,  save_blend: "true"  }
-          - { shard: 2,  start: 13,  end: 24,  save_blend: "false" }
-          - { shard: 3,  start: 25,  end: 36,  save_blend: "false" }
-          - { shard: 4,  start: 37,  end: 48,  save_blend: "false" }
-          - { shard: 5,  start: 49,  end: 60,  save_blend: "false" }
-          - { shard: 6,  start: 61,  end: 72,  save_blend: "false" }
-          - { shard: 7,  start: 73,  end: 84,  save_blend: "false" }
-          - { shard: 8,  start: 85,  end: 96,  save_blend: "false" }
-          - { shard: 9,  start: 97,  end: 108, save_blend: "false" }
-          - { shard: 10, start: 109, end: 120, save_blend: "false" }
-          - { shard: 11, start: 121, end: 132, save_blend: "false" }
-          - { shard: 12, start: 133, end: 144, save_blend: "false" }
-          - { shard: 13, start: 145, end: 156, save_blend: "false" }
-          - { shard: 14, start: 157, end: 168, save_blend: "false" }
-          - { shard: 15, start: 169, end: 180, save_blend: "false" }
-          - { shard: 16, start: 181, end: 192, save_blend: "false" }
-          - { shard: 17, start: 193, end: 204, save_blend: "false" }
-          - { shard: 18, start: 205, end: 216, save_blend: "false" }
-          - { shard: 19, start: 217, end: 228, save_blend: "false" }
-          - { shard: 20, start: 229, end: 240, save_blend: "false" }
-          - { shard: 21, start: 241, end: 252, save_blend: "false" }
-          - { shard: 22, start: 253, end: 264, save_blend: "false" }
+          - { shard: 1,  start: 1,   end: 22,  save_blend: "true"  }
+          - { shard: 2,  start: 23,  end: 44,  save_blend: "false" }
+          - { shard: 3,  start: 45,  end: 66,  save_blend: "false" }
+          - { shard: 4,  start: 67,  end: 88,  save_blend: "false" }
+          - { shard: 5,  start: 89,  end: 110, save_blend: "false" }
+          - { shard: 6,  start: 111, end: 132, save_blend: "false" }
+          - { shard: 7,  start: 133, end: 154, save_blend: "false" }
+          - { shard: 8,  start: 155, end: 176, save_blend: "false" }
+          - { shard: 9,  start: 177, end: 198, save_blend: "false" }
+          - { shard: 10, start: 199, end: 220, save_blend: "false" }
+          - { shard: 11, start: 221, end: 242, save_blend: "false" }
+          - { shard: 12, start: 243, end: 264, save_blend: "false" }
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -269,7 +259,7 @@ jobs:
           python generate_prop_decals.py
           python render_char_25d.py
 
-      - name: "Stage 3: Render 720p HD PNG Sequence (Final Shard ${{ matrix.shard }}: ${{ matrix.start }}..${{ matrix.end }})"
+      - name: "Stage 3: Render 1080p PNG Sequence (Final Shard ${{ matrix.shard }}: ${{ matrix.start }}..${{ matrix.end }})"
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: "llvmpipe"
@@ -279,10 +269,10 @@ jobs:
           if [ "${{ matrix.save_blend }}" = "true" ]; then
             BLEND_FLAG="--save-blend"
           fi
-          xvfb-run -a -s "-screen 0 1280x720x24" \
+          xvfb-run -a -s "-screen 0 1920x1080x24" \
             "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
             --python main.py -- --mode shard --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
-            --width 1280 --height 720 --samples 3 --fast-ci --frames-dir output/frames ${BLEND_FLAG}
+            --width 1920 --height 1080 --samples 4 --fast-ci --frames-dir output/frames ${BLEND_FLAG}
           ls -1 output/frames/frame_*.png | wc -l
 
       - name: Upload Final Shard ${{ matrix.shard }} PNGs

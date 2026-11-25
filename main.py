@@ -252,19 +252,29 @@ def render_diagnostic_frames(
 
 
 def render_shard_png_sequence(scene: bpy.types.Scene, args: argparse.Namespace) -> None:
+    """
+    Render `[args.start .. args.end]` in ONE persistent `animation=True` EEVEE Next session
+    so `llvmpipe` compiles GLSL shaders ONCE instead of recompiling from scratch per frame!
+    """
     frames_dir = Path(args.frames_dir)
     frames_dir.mkdir(parents=True, exist_ok=True)
     configure_render_and_compositor(scene, args.width, args.height, samples=args.samples, fast_ci=args.fast_ci)
     scene.render.image_settings.file_format = "PNG"
     scene.render.image_settings.color_mode = "RGB"
+    scene.render.use_file_extension = True
+    if hasattr(scene.render, "use_persistent_data"):
+        scene.render.use_persistent_data = True
 
-    for f in range(args.start, args.end + 1):
-        scene.frame_set(f)
-        bpy.context.view_layer.update()
-        out_f = frames_dir / f"frame_{f:04d}.png"
-        scene.render.filepath = str(out_f)
-        print(f"[Shard Render] Frame {f}/{args.end} -> {out_f}", flush=True)
-        bpy.ops.render.render(write_still=True)
+    scene.frame_start = args.start
+    scene.frame_end = args.end
+    scene.frame_step = 1
+    scene.render.filepath = str(frames_dir / "frame_")
+    print(
+        f"[Shard Render] Persistent animation pass Frames {args.start}..{args.end} "
+        f"({args.width}x{args.height}, {args.samples} samples) -> {frames_dir}/frame_XXXX.png",
+        flush=True,
+    )
+    bpy.ops.render.render(animation=True)
 
 
 def render_full_mp4_animation(scene: bpy.types.Scene, args: argparse.Namespace) -> None:
