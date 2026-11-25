@@ -1,0 +1,277 @@
+name: Render 75s YouTube Short (6 Locations, 30 Camera Moves, God Rays & Narration)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Render mode (debug = 12 vertical 9:16 preview frames across all 6 locations; final = Full 75s 1800-frame MP4 with Indonesian narration & subtitles)"
+        required: true
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - final
+
+permissions:
+  contents: write
+
+env:
+  BLENDER_VERSION: "4.2.16"
+  BLENDER_SERIES: "4.2"
+  BLENDER_DIR: "/tmp/blender-4.2.16-linux-x64"
+
+jobs:
+  # ============================================================================
+  # DEBUG MODE: 3 Parallel Shards x 4 Vertical 9:16 Preview Frames (12 Total)
+  # ============================================================================
+  short-debug-shard:
+    if: ${{ inputs.mode == 'debug' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1, frames: "12,95,250,415",    save_blend: "false" }
+          - { shard: 2, frames: "520,625,780,950",  save_blend: "true"  }
+          - { shard: 3, frames: "1120,1205,1475,1650", save_blend: "false" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install resvg-py pillow
+      - name: Install headless OpenGL (Xvfb + Mesa) & Fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            xvfb libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libxi6 \
+            libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libice6 \
+            libglu1-mesa xz-utils fonts-dejavu-core
+      - name: Cache Blender ${{ env.BLENDER_VERSION }} LTS
+        id: cache-blender
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BLENDER_DIR }}
+          key: blender-linux-${{ env.BLENDER_VERSION }}
+      - name: Download & extract Blender ${{ env.BLENDER_VERSION }} LTS
+        if: steps.cache-blender.outputs.cache-hit != 'true'
+        run: |
+          FILE="blender-${{ env.BLENDER_VERSION }}-linux-x64.tar.xz"
+          MIRRORS=(
+            "https://ftp.nluug.nl/pub/graphics/blender/release/Blender${{ env.BLENDER_SERIES }}/${FILE}"
+            "https://mirrors.ocf.berkeley.edu/blender/release/Blender${{ env.BLENDER_SERIES }}/${FILE}"
+            "https://download.blender.org/release/Blender${{ env.BLENDER_SERIES }}/${FILE}"
+          )
+          for URL in "${MIRRORS[@]}"; do
+            if curl -fSL --retry 3 --retry-delay 4 -A "Mozilla/5.0" "$URL" -o "/tmp/blender.tar.xz"; then
+              tar -xf "/tmp/blender.tar.xz" -C "/tmp" && rm -f "/tmp/blender.tar.xz" && break
+            fi
+          done
+      - name: "Stage 1-3: Sync, 2.5D Sprites & 9:16 Preview Render (Shard ${{ matrix.shard }})"
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: "llvmpipe"
+          MESA_GL_VERSION_OVERRIDE: "4.5"
+        run: |
+          rm -rf output_short_75s/char_frames output_short_75s/debug_frames
+          "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
+            --python short_75s/export_sync_short.py -- --mode debug --frames "${{ matrix.frames }}"
+          python generate_prop_decals.py
+          python short_75s/render_char_short.py
+          BLEND_FLAG=""
+          if [ "${{ matrix.save_blend }}" = "true" ]; then BLEND_FLAG="--save-blend"; fi
+          xvfb-run -a -s "-screen 0 1080x1920x24" \
+            "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
+            --python short_75s/main_short.py -- --mode debug --frames "${{ matrix.frames }}" --fast-ci ${BLEND_FLAG}
+          mv output_short_75s/verification_report.json "output_short_75s/verification_report_shard_${{ matrix.shard }}.json"
+          ls -lh output_short_75s/debug_frames/*.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: short-debug-shard-${{ matrix.shard }}
+          path: |
+            output_short_75s/debug_frames/*.png
+            output_short_75s/verification_report_shard_${{ matrix.shard }}.json
+            output_short_75s/short_75s_scene.blend
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-short-debug:
+    if: ${{ inputs.mode == 'debug' }}
+    needs: short-debug-shard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: short-debug-shard-*
+          merge-multiple: true
+          path: merged_short_debug
+      - name: Verify all 12 vertical 9:16 preview frames
+        run: |
+          ls -lh merged_short_debug/debug_frames/*.png
+          COUNT=$(ls -1 merged_short_debug/debug_frames/short_debug_*.png | wc -l)
+          echo "Total 9:16 preview frames: ${COUNT}"
+          [ "${COUNT}" -eq 12 ] || exit 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: short-75s-debug-preview
+          path: |
+            merged_short_debug/debug_frames/*.png
+            merged_short_debug/verification_report_shard_*.json
+            merged_short_debug/short_75s_scene.blend
+          if-no-files-found: error
+          retention-days: 14
+
+  # ============================================================================
+  # FINAL MODE: 30 Parallel Shards x 60 Frames (Persistent Shader Session!)
+  # + Synced Indonesian Neural TTS Narration, Welding SFX & Burned-In Captions!
+  # ============================================================================
+  short-final-shard:
+    if: ${{ inputs.mode == 'final' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1,  start: 1,    end: 60,   save_blend: "true"  }
+          - { shard: 2,  start: 61,   end: 120,  save_blend: "false" }
+          - { shard: 3,  start: 121,  end: 180,  save_blend: "false" }
+          - { shard: 4,  start: 181,  end: 240,  save_blend: "false" }
+          - { shard: 5,  start: 241,  end: 300,  save_blend: "false" }
+          - { shard: 6,  start: 301,  end: 360,  save_blend: "false" }
+          - { shard: 7,  start: 361,  end: 420,  save_blend: "false" }
+          - { shard: 8,  start: 421,  end: 480,  save_blend: "false" }
+          - { shard: 9,  start: 481,  end: 540,  save_blend: "false" }
+          - { shard: 10, start: 541,  end: 600,  save_blend: "false" }
+          - { shard: 11, start: 601,  end: 660,  save_blend: "false" }
+          - { shard: 12, start: 661,  end: 720,  save_blend: "false" }
+          - { shard: 13, start: 721,  end: 780,  save_blend: "false" }
+          - { shard: 14, start: 781,  end: 840,  save_blend: "false" }
+          - { shard: 15, start: 841,  end: 900,  save_blend: "false" }
+          - { shard: 16, start: 901,  end: 960,  save_blend: "false" }
+          - { shard: 17, start: 961,  end: 1020, save_blend: "false" }
+          - { shard: 18, start: 1021, end: 1080, save_blend: "false" }
+          - { shard: 19, start: 1081, end: 1140, save_blend: "false" }
+          - { shard: 20, start: 1141, end: 1200, save_blend: "false" }
+          - { shard: 21, start: 1201, end: 1260, save_blend: "false" }
+          - { shard: 22, start: 1261, end: 1320, save_blend: "false" }
+          - { shard: 23, start: 1321, end: 1380, save_blend: "false" }
+          - { shard: 24, start: 1381, end: 1440, save_blend: "false" }
+          - { shard: 25, start: 1441, end: 1500, save_blend: "false" }
+          - { shard: 26, start: 1501, end: 1560, save_blend: "false" }
+          - { shard: 27, start: 1561, end: 1620, save_blend: "false" }
+          - { shard: 28, start: 1621, end: 1680, save_blend: "false" }
+          - { shard: 29, start: 1681, end: 1740, save_blend: "false" }
+          - { shard: 30, start: 1741, end: 1800, save_blend: "false" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install resvg-py pillow
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            xvfb libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libxi6 \
+            libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libice6 \
+            libglu1-mesa xz-utils fonts-dejavu-core
+      - id: cache-blender
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BLENDER_DIR }}
+          key: blender-linux-${{ env.BLENDER_VERSION }}
+      - if: steps.cache-blender.outputs.cache-hit != 'true'
+        run: |
+          FILE="blender-${{ env.BLENDER_VERSION }}-linux-x64.tar.xz"
+          MIRRORS=(
+            "https://ftp.nluug.nl/pub/graphics/blender/release/Blender${{ env.BLENDER_SERIES }}/${FILE}"
+            "https://mirrors.ocf.berkeley.edu/blender/release/Blender${{ env.BLENDER_SERIES }}/${FILE}"
+            "https://download.blender.org/release/Blender${{ env.BLENDER_SERIES }}/${FILE}"
+          )
+          for URL in "${MIRRORS[@]}"; do
+            if curl -fSL --retry 3 --retry-delay 4 -A "Mozilla/5.0" "$URL" -o "/tmp/blender.tar.xz"; then
+              tar -xf "/tmp/blender.tar.xz" -C "/tmp" && rm -f "/tmp/blender.tar.xz" && break
+            fi
+          done
+      - name: "Render 9:16 HD Shard ${{ matrix.shard }} (${{ matrix.start }}..${{ matrix.end }})"
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: "llvmpipe"
+          MESA_GL_VERSION_OVERRIDE: "4.5"
+        run: |
+          rm -rf output_short_75s/char_frames output_short_75s/frames
+          "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
+            --python short_75s/export_sync_short.py -- --mode final --start "${{ matrix.start }}" --end "${{ matrix.end }}"
+          python generate_prop_decals.py
+          python short_75s/render_char_short.py
+          BLEND_FLAG=""
+          if [ "${{ matrix.save_blend }}" = "true" ]; then BLEND_FLAG="--save-blend"; fi
+          xvfb-run -a -s "-screen 0 720x1280x24" \
+            "${{ env.BLENDER_DIR }}/blender" --background --python-exit-code 1 \
+            --python short_75s/main_short.py -- --mode shard \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+            --width 720 --height 1280 --samples 3 --fast-ci --frames-dir output_short_75s/frames ${BLEND_FLAG}
+          ls -1 output_short_75s/frames/frame_*.png | wc -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: short-final-shard-${{ matrix.shard }}
+          path: |
+            output_short_75s/frames/*.png
+            output_short_75s/short_75s_scene.blend
+          if-no-files-found: error
+          retention-days: 1
+
+  encode-short-75s-mp4:
+    if: ${{ inputs.mode == 'final' }}
+    needs: short-final-shard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install FFmpeg, Fonts & edge-tts for Indonesian Narration
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg fonts-dejavu-core
+          pip install edge-tts
+      - name: Generate Synced 75s Indonesian Narration, SFX & Captions
+        run: python short_75s/generate_narration_audio.py
+      - name: Download all 30 rendered frame shards (1,800 frames)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: short-final-shard-*
+          merge-multiple: true
+          path: merged_short_final
+      - name: Verify 1,800 frames & Encode 75s YouTube Short MP4 (9:16 + Narration + Captions)
+        run: |
+          COUNT=$(ls -1 merged_short_final/frames/frame_*.png | wc -l)
+          echo "Total rendered frames: ${COUNT}"
+          [ "${COUNT}" -eq 1800 ] || exit 1
+          mkdir -p final_short_out
+          ffmpeg -y -framerate 24 -start_number 1 -i merged_short_final/frames/frame_%04d.png \
+            -i output_short_75s/narration_mix.wav \
+            -vf "scale=1080:1920:flags=lanczos,subtitles=output_short_75s/captions.srt:force_style='FontName=DejaVu Sans,FontSize=15,Bold=1,PrimaryColour=&H0000EAFF,OutlineColour=&H00181218,Outline=2,Shadow=1,Alignment=2,MarginV=120'" \
+            -c:v libx264 -pix_fmt yuv420p -crf 18 -preset slow -movflags +faststart \
+            -c:a aac -b:a 192k -shortest \
+            final_short_out/mechanic_short_75s_final.mp4
+          if [ -f merged_short_final/short_75s_scene.blend ]; then
+            cp merged_short_final/short_75s_scene.blend final_short_out/short_75s_scene.blend
+          fi
+          cp output_short_75s/captions.srt final_short_out/captions.srt
+          ls -lh final_short_out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mechanic-short-75s-final-mp4
+          path: |
+            final_short_out/mechanic_short_75s_final.mp4
+            final_short_out/captions.srt
+            final_short_out/short_75s_scene.blend
+          if-no-files-found: error
+          retention-days: 14
