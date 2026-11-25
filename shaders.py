@@ -125,7 +125,7 @@ def apply_cel_outline(
 def _build_ao_factor_socket(nt: bpy.types.NodeTree, loc_x: float, loc_y: float, strength: float = 0.45):
     """Create an Ambient Occlusion crevice darkening factor socket (1.0 - strength .. 1.0)."""
     ao = nt.nodes.new("ShaderNodeAmbientOcclusion")
-    ao.samples = 8
+    ao.samples = 2
     ao.only_local = False
     ao.location = (loc_x, loc_y)
     ao.inputs["Distance"].default_value = 0.42

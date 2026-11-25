@@ -106,11 +106,11 @@ def configure_render_and_compositor(
     if hasattr(eevee, "use_shadows"):
         eevee.use_shadows = True
     if hasattr(eevee, "shadow_resolution_scale"):
-        eevee.shadow_resolution_scale = 0.50 if fast_ci else 0.85
+        eevee.shadow_resolution_scale = 0.35 if fast_ci else 0.85
     if hasattr(eevee, "shadow_ray_count"):
         eevee.shadow_ray_count = 1
     if hasattr(eevee, "shadow_step_count"):
-        eevee.shadow_step_count = 3 if fast_ci else 5
+        eevee.shadow_step_count = 2 if fast_ci else 5
 
     scene.render.resolution_x = width
     scene.render.resolution_y = height
