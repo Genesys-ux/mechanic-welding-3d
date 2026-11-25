@@ -108,13 +108,26 @@ def build_75s_mechanic_billboard(camera_obj: bpy.types.Object, target_frames: Li
     bm.free()
 
     mat_25d = _create_shadeless_25d_sequence_material(CHAR_FRAMES_DIR, name="Mat_Char25D_Short75s")
-    # Extend sequence duration to cover all 1,800 frames (75s)!
-    for nd in mat_25d.node_tree.nodes:
+    tex_node = None
+    nt = mat_25d.node_tree
+    mix_node = None
+    for nd in nt.nodes:
         if nd.type == "TEX_IMAGE":
+            tex_node = nd
             nd.image_user.frame_duration = FRAME_END
             nd.image_user.frame_start = FRAME_START
             nd.image_user.frame_offset = 0
             nd.image_user.use_auto_refresh = True
+        elif nd.type == "MIX_SHADER":
+            mix_node = nd
+    # Crisp hard alpha cutoff (> 0.5) so transparent area around character is 100% pure invisible!
+    if tex_node is not None and mix_node is not None:
+        gt = nt.nodes.new("ShaderNodeMath")
+        gt.operation = "GREATER_THAN"
+        gt.location = (100, -180)
+        gt.inputs[1].default_value = 0.5
+        nt.links.new(tex_node.outputs["Alpha"], gt.inputs[0])
+        nt.links.new(gt.outputs["Value"], mix_node.inputs["Fac"])
 
     billboard = bpy.data.objects.new("Char_Billboard", mesh)
     billboard.data.materials.append(mat_25d)
@@ -127,7 +140,7 @@ def build_75s_mechanic_billboard(camera_obj: bpy.types.Object, target_frames: Li
     lt.track_axis = "TRACK_NEGATIVE_Y"
     lt.lock_axis = "LOCK_Z"
 
-    return {"empty_mechanic": mech_empty, "billboard": billboard, "material": mat_25d}
+    return {"empty_mechanic": mech_empty, "billboard": billboard, "material": mat_25d, "tex_node": tex_node}
 
 
 def animate_75s_torch_and_cable(
@@ -239,14 +252,15 @@ def main() -> None:
     print("[Short75s 3/5] Building 6-Location 2.5D Dynamic Billboard Character...")
     char_data = build_75s_mechanic_billboard(cam_data["camera"], target_frames)
 
-    print("[Short75s 4/5] Building Low-Sun, Long-Shadow, Blue-Shade, God-Rays, Haze & Dual-Arc VFX...")
+    print("[Short75s 4/5] Building Low-Sun, Long-Shadow, Blue-Shade, Single Window God-Ray & Dual-Arc VFX...")
     build_75s_lighting_and_vfx(
         scene=scene,
         torch_tip_empty=env_data["torch_tip"],
         seam_prog_node=env_data["seam_prog_node"],
         seam_heat_node=env_data["seam_heat_node"],
-        godray_col_node=env_data["godray_col_node"],
-        godray_alpha_node=env_data["godray_alpha_node"],
+        hero_window_loc=env_data["hero_window_loc"],
+        haze_col_sock=env_data["haze_col_sock"],
+        haze_dens_sock=env_data["haze_dens_sock"],
     )
 
     print("[Short75s 5/5] Synchronizing 3D Welding Torch & Cable Across 75s Story...")
@@ -260,13 +274,25 @@ def main() -> None:
     if args.mode == "debug":
         DEBUG_FRAMES_DIR.mkdir(parents=True, exist_ok=True)
         configure_render_and_compositor(scene, DEBUG_RES_X, DEBUG_RES_Y, samples=3 if args.fast_ci else 5, fast_ci=args.fast_ci)
+        # Disable motion blur on sparse debug frames & bind exact per-frame PNG (`FILE` mode)
+        # so Blender NEVER samples a missing `f-1` frame (eliminating any magenta/pink billboard box!)
+        scene.render.use_motion_blur = False
         scene.render.image_settings.file_format = "PNG"
         scene.render.image_settings.color_mode = "RGB"
         if hasattr(scene.render, "use_persistent_data"):
             scene.render.use_persistent_data = True
 
+        tex_node = char_data.get("tex_node")
         report: Dict[str, Any] = {"frames": {}, "jack_contacts": env_data.get("jack_contacts", {})}
         for idx, f in enumerate(target_frames, start=1):
+            if tex_node is not None:
+                png_p = CHAR_FRAMES_DIR / f"char_{f:04d}.png"
+                if png_p.exists():
+                    img_f = bpy.data.images.load(str(png_p.resolve()), check_existing=True)
+                    img_f.source = "FILE"
+                    if hasattr(img_f, "alpha_mode"):
+                        img_f.alpha_mode = "STRAIGHT"
+                    tex_node.image = img_f
             scene.frame_set(f)
             bpy.context.view_layer.update()
             deps = bpy.context.evaluated_depsgraph_get()

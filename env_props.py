@@ -772,8 +772,9 @@ def _import_and_setup_reference_car(col: bpy.types.Collection) -> Dict[str, Any]
     scale_factor = 3.96 / cur_len
     master.scale = (scale_factor, scale_factor, scale_factor)
 
-    # Service pitch (+0.072 rad around +Y): rear tires touch Z=0.0, front axle raised ~16 cm!
-    master.rotation_euler = (master.rotation_euler.x, 0.072, master.rotation_euler.z)
+    # Service pitch (-0.072 rad around local +Y BEFORE R_z(pi)): lifts car FRONT (+X local -> -X world)
+    # UP by ~16 cm while keeping rear tires flat on Z=0.0!
+    master.rotation_euler = (master.rotation_euler.x, -0.072, master.rotation_euler.z)
     bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
 
@@ -785,6 +786,17 @@ def _import_and_setup_reference_car(col: bpy.types.Collection) -> Dict[str, Any]
     fl_wheel = wheel_vg_map.get("FL")
     fr_wheel = wheel_vg_map.get("FR")
     rear_wheels = [w for k, w in wheel_vg_map.items() if k in ("RL", "RR")]
+
+    # Auto-verify pitch direction: front wheels MUST be higher than rear wheels (never nose-down!)
+    if fl_wheel is not None and rear_wheels:
+        fl_chk_min, _ = _eval_world_bbox([fl_wheel], deps)
+        rw_chk_min, _ = _eval_world_bbox(rear_wheels, deps)
+        if fl_chk_min.z < rw_chk_min.z + 0.02:
+            master.rotation_euler = (master.rotation_euler.x, -master.rotation_euler.y, master.rotation_euler.z)
+            bpy.context.view_layer.update()
+            deps = bpy.context.evaluated_depsgraph_get()
+            b_min, b_max = _eval_world_bbox(mesh_objs, deps)
+            body_min, _ = _eval_world_bbox(main_body_meshes, deps)
 
     if fl_wheel is not None:
         fl_min, fl_max = _eval_world_bbox([fl_wheel], deps)
@@ -800,6 +812,7 @@ def _import_and_setup_reference_car(col: bpy.types.Collection) -> Dict[str, Any]
 
     # Position car so:
     #   - Rear tires sit 100% flush on workshop floor (`Z = 0.000m`)
+    #   - Front tires sit cleanly ~16cm ABOVE the floor (NEVER sinking underground!)
     #   - Front-left wheel hub X sits at `X = -0.32m`
     #   - Left body flank sits at `Y = -0.440m`
     dx = -0.32 - fl_center_x
@@ -808,6 +821,15 @@ def _import_and_setup_reference_car(col: bpy.types.Collection) -> Dict[str, Any]
     master.location = (master.location.x + dx, master.location.y + dy, master.location.z + dz)
     bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
+
+    # Final hard safety clamp: guarantee NO tire ever drops below Z = 0.000m
+    all_wheels = list(wheel_vg_map.values())
+    if all_wheels:
+        aw_min, _ = _eval_world_bbox(all_wheels, deps)
+        if aw_min.z < 0.0:
+            master.location.z += -aw_min.z
+            bpy.context.view_layer.update()
+            deps = bpy.context.evaluated_depsgraph_get()
 
     # Upgrade All GLB Materials to Rich Textured Cel-Shade + Clean Outlines & Collision
     upgraded_mats = set()

@@ -39,94 +39,73 @@ from env_props import (  # noqa: E402
 from shaders import get_cel_material, get_emission_material, get_textured_cel_material  # noqa: E402
 
 
-def _create_godray_material(name: str = "Mat_VFX_GodRayShaft") -> Tuple[bpy.types.Material, bpy.types.Node, bpy.types.Node]:
+def _create_localized_haze_volume_material(name: str = "Mat_VFX_WorkshopHaze") -> Tuple[bpy.types.Material, bpy.types.Node, bpy.types.Node]:
     """
-    Create a clean, noise-free Volumetric God-Ray light-shaft shader using soft Fresnel/LayerWeight
-    edge falloff + vertical gradient -> Mix(Transparent, Emission) so god rays look dramatic
-    in EEVEE Next CPU renders AND animate color/opacity as the story turns!
+    Create a localized interior Volumetric Scatter material so ONLY the single physical
+    Window Spot Light forms real shadowed God Rays that NEVER penetrate props or character!
     """
     mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
-    mat.use_backface_culling = False
-    if hasattr(mat, "surface_render_method"):
-        mat.surface_render_method = "BLENDED"
-    if hasattr(mat, "blend_method"):
-        try:
-            mat.blend_method = "BLEND"
-        except Exception:
-            pass
-    if hasattr(mat, "shadow_method"):
-        try:
-            mat.shadow_method = "NONE"
-        except Exception:
-            pass
-
     nt = mat.node_tree
     nt.nodes.clear()
 
     out = nt.nodes.new("ShaderNodeOutputMaterial")
-    out.location = (820, 0)
+    out.location = (420, 0)
 
-    lp = nt.nodes.new("ShaderNodeLightPath")
-    lp.location = (220, 260)
+    vol = nt.nodes.new("ShaderNodeVolumeScatter")
+    vol.location = (80, 0)
+    vol.inputs["Color"].default_value = hex_to_rgba("#FFD699")
+    vol.inputs["Density"].default_value = 0.018
+    vol.inputs["Anisotropy"].default_value = 0.76  # Strong forward-scatter for crisp window god ray!
+    nt.links.new(vol.outputs["Volume"], out.inputs["Volume"])
+    return mat, vol.inputs["Color"], vol.inputs["Density"]
 
-    lw = nt.nodes.new("ShaderNodeLayerWeight")
-    lw.location = (-460, 140)
-    lw.inputs["Blend"].default_value = 0.35
 
-    inv_fres = nt.nodes.new("ShaderNodeMath")
-    inv_fres.operation = "SUBTRACT"
-    inv_fres.location = (-240, 140)
-    inv_fres.inputs[0].default_value = 1.0
-    nt.links.new(lw.outputs["Facing"], inv_fres.inputs[1])
+def _build_realistic_hero_window(
+    col: bpy.types.Collection,
+    mat_frame: bpy.types.Material,
+    mat_sill: bpy.types.Material,
+    mat_glass_glow: bpy.types.Material,
+    location: Tuple[float, float, float],
+    rot_z: float,
+) -> bpy.types.Object:
+    """
+    Build a real 3D industrial multi-pane workshop window with an OPEN light passage,
+    deep recessed stone/concrete sill, heavy steel outer frame, 3x2 steel mullions that
+    cast authentic god-ray shadow bars, and a tilted-open top ventilation casement pane!
+    """
+    wgrp = bpy.data.objects.new("Env_HeroGodRayWindow_Grp", None)
+    wgrp.location = location
+    wgrp.rotation_euler = (0.0, 0.0, rot_z)
+    link_exclusively(wgrp, col)
 
-    pow_edge = nt.nodes.new("ShaderNodeMath")
-    pow_edge.operation = "POWER"
-    pow_edge.location = (-40, 140)
-    pow_edge.inputs[1].default_value = 2.2
-    nt.links.new(inv_fres.outputs["Value"], pow_edge.inputs[0])
+    win_w, win_h, depth = 1.65, 1.15, 0.24
+    # Outer 4-sided steel window frame (HOLLOW center so real light rays pass straight through!)
+    top_f = _make_beveled_box("Env_HeroWin_Top", (win_w + 0.12, depth, 0.08), col, mat_frame, location=(0.0, 0.0, win_h * 0.5 + 0.04), bevel_width=0.006, outline_thickness=0.005)
+    bot_f = _make_beveled_box("Env_HeroWin_Bot", (win_w + 0.16, depth + 0.08, 0.09), col, mat_sill, location=(0.0, 0.02, -win_h * 0.5 - 0.045), bevel_width=0.008, outline_thickness=0.005)
+    lft_f = _make_beveled_box("Env_HeroWin_Lft", (0.08, depth, win_h), col, mat_frame, location=(-win_w * 0.5 - 0.04, 0.0, 0.0), bevel_width=0.006, outline_thickness=0.005)
+    rgt_f = _make_beveled_box("Env_HeroWin_Rgt", (0.08, depth, win_h), col, mat_frame, location=(win_w * 0.5 + 0.04, 0.0, 0.0), bevel_width=0.006, outline_thickness=0.005)
+    for p in (top_f, bot_f, lft_f, rgt_f):
+        p.parent = wgrp
 
-    alpha_node = nt.nodes.new("ShaderNodeValue")
-    alpha_node.name = "GodRayAlpha"
-    alpha_node.label = "GodRayAlpha"
-    alpha_node.outputs[0].default_value = 0.32
-    alpha_node.location = (-240, -60)
+    # Crisp 3D Steel Mullions (2 vertical + 1 horizontal) that slice the real volumetric sunbeam!
+    for mx in (-0.28, 0.28):
+        vm = _make_beveled_box(f"Env_HeroWin_VMullion_{mx}", (0.036, 0.06, win_h), col, mat_frame, location=(mx, 0.0, 0.0), bevel_width=0.003, outline_thickness=0.003)
+        vm.parent = wgrp
+    hm = _make_beveled_box("Env_HeroWin_HMullion", (win_w, 0.06, 0.036), col, mat_frame, location=(0.0, 0.0, 0.04), bevel_width=0.003, outline_thickness=0.003)
+    hm.parent = wgrp
 
-    mul_a = nt.nodes.new("ShaderNodeMath")
-    mul_a.operation = "MULTIPLY"
-    mul_a.location = (180, 60)
-    nt.links.new(pow_edge.outputs["Value"], mul_a.inputs[0])
-    nt.links.new(alpha_node.outputs["Value"], mul_a.inputs[1])
+    # Tilted-open top casement sash (realistic open workshop window letting sunbeams pour in!)
+    sash_top = _make_beveled_box("Env_HeroWin_OpenSashFrame", (win_w - 0.08, 0.035, 0.04), col, mat_frame, location=(0.0, 0.24, 0.24), rotation=(0.45, 0.0, 0.0), bevel_width=0.003, outline_thickness=0.003)
+    sash_top.parent = wgrp
+    for sx in (-0.75, 0.75):
+        stay = _make_cylinder(f"Env_HeroWin_StayBar_{sx}", 0.007, 0.34, col, mat_frame, location=(sx, 0.14, 0.36), rotation=(1.05, 0.0, 0.0), outline_thickness=0.002)
+        stay.parent = wgrp
 
-    # Only visible to camera rays (never casts shadows or corrupts reflections)
-    cam_mask = nt.nodes.new("ShaderNodeMath")
-    cam_mask.operation = "MULTIPLY"
-    cam_mask.location = (380, 120)
-    nt.links.new(mul_a.outputs["Value"], cam_mask.inputs[0])
-    nt.links.new(lp.outputs["Is Camera Ray"], cam_mask.inputs[1])
-
-    color_node = nt.nodes.new("ShaderNodeRGB")
-    color_node.name = "GodRayColor"
-    color_node.label = "GodRayColor"
-    color_node.outputs[0].default_value = hex_to_rgba("#FFD28E")
-    color_node.location = (0, -240)
-
-    emis = nt.nodes.new("ShaderNodeEmission")
-    emis.location = (260, -200)
-    emis.inputs["Strength"].default_value = 2.2
-    nt.links.new(color_node.outputs["Color"], emis.inputs["Color"])
-
-    transp = nt.nodes.new("ShaderNodeBsdfTransparent")
-    transp.location = (260, -40)
-
-    mix_sh = nt.nodes.new("ShaderNodeMixShader")
-    mix_sh.location = (580, 0)
-    nt.links.new(cam_mask.outputs["Value"], mix_sh.inputs["Fac"])
-    nt.links.new(transp.outputs["BSDF"], mix_sh.inputs[1])
-    nt.links.new(emis.outputs["Emission"], mix_sh.inputs[2])
-    nt.links.new(mix_sh.outputs["Shader"], out.inputs["Surface"])
-
-    return mat, color_node, alpha_node
+    # Subtle glowing sky-pane trim on the exterior perimeter (does NOT block shadows!)
+    sky_rim = _make_beveled_box("Env_HeroWin_ExteriorGlowTrim", (win_w, 0.015, 0.025), col, mat_glass_glow, location=(0.0, -depth * 0.5 - 0.02, win_h * 0.5 - 0.02), bevel_width=0.0, outline_thickness=0.0)
+    sky_rim.parent = wgrp
+    return wgrp
 
 
 def _remove_objects_by_prefix(prefixes: Tuple[str, ...]) -> None:
@@ -265,26 +244,37 @@ def build_6location_workshop_world() -> Dict[str, Any]:
     _make_beveled_box("Loc5_PartsBox_3", (0.48, 0.40, 0.32), env_col, mat_red, location=(ax + 0.78, ay - 0.06, 1.02), bevel_width=0.010, outline_thickness=0.005)
 
     # ==========================================================================
-    # VOLUMETRIC GOD-RAY LIGHT SHAFTS (Open Gate & Barred Windows!)
+    # ONE REALISTIC HERO WORKSHOP WINDOW + LOCALIZED VOLUMETRIC HAZE DOMAIN
+    # (True shadowed God Rays formed ONLY through this window, NEVER penetrating props/char!)
     # ==========================================================================
-    godray_mat, godray_col_node, godray_alpha_node = _create_godray_material()
-    godray_objs: List[bpy.types.Object] = []
+    # Cut an actual open aperture in the upper North-Left wall at `X = -4.15, Y = +1.70, Z = 2.35`
+    # by splitting Loc1_GateWall_North around the realistic 3D Hero Window!
+    _remove_objects_by_prefix(("Loc1_GateWall_North",))
+    _make_beveled_box("Loc1_GateWall_NorthLow", (0.24, 2.2, 1.72), env_col, mat_wall_up, location=(left_x, 2.05, 0.86), bevel_width=0.008, outline_thickness=0.006)
+    _make_beveled_box("Loc1_GateWall_NorthTop", (0.24, 2.2, 0.90), env_col, mat_wall_up, location=(left_x, 2.05, 3.40), bevel_width=0.008, outline_thickness=0.006)
+    _make_beveled_box("Loc1_GateWall_NorthPillarS", (0.24, 0.28, 1.30), env_col, mat_wall_up, location=(left_x, 1.05, 2.35), bevel_width=0.006, outline_thickness=0.005)
+    _make_beveled_box("Loc1_GateWall_NorthPillarN", (0.24, 0.28, 1.30), env_col, mat_wall_up, location=(left_x, 3.05, 2.35), bevel_width=0.006, outline_thickness=0.005)
 
-    ray_specs = [
-        # Wide low-sun shafts pouring through the Open Roll-Up Gate into the Service Bay!
-        ("VFX_GodRay_GateMain", (-2.65, -0.95, 1.55), (0.0, math.radians(74.0), math.radians(-14.0)), 1.05, 0.42, 5.2),
-        ("VFX_GodRay_GateLow",  (-2.20, -1.65, 1.25), (0.0, math.radians(76.0), math.radians(-10.0)), 0.85, 0.34, 4.8),
-        # Shafts cutting down from Right & Back Barred Windows!
-        ("VFX_GodRay_WinBack",  ( 0.45,  1.25, 1.72), (math.radians(-68.0), 0.0, math.radians(12.0)), 0.75, 0.28, 3.6),
-        ("VFX_GodRay_WinRight", ( 1.85,  0.25, 1.68), (0.0, math.radians(-68.0), math.radians(10.0)), 0.72, 0.26, 3.8),
-    ]
-    for r_name, r_loc, r_rot, r_rad1, r_rad2, r_len in ray_specs:
-        bm_r = bmesh.new()
-        bmesh.ops.create_cone(bm_r, cap_ends=False, cap_tris=False, segments=20, radius1=r_rad1, radius2=r_rad2, depth=r_len)
-        r_obj = _new_mesh_obj(r_name, bm_r, vfx_col, godray_mat, location=r_loc, rotation=r_rot, outline_thickness=0.0, smooth=True)
-        godray_objs.append(r_obj)
+    hero_win_loc = (left_x, 2.05, 2.35)
+    _build_realistic_hero_window(
+        env_col, mat_beam, mat_wall_low, mat_sign_glow,
+        location=hero_win_loc, rot_z=math.pi * 0.5,
+    )
 
-    env_data["godray_objs"] = godray_objs
-    env_data["godray_col_node"] = godray_col_node
-    env_data["godray_alpha_node"] = godray_alpha_node
+    # Localized Volumetric Haze Box inside the workshop (NO global yellow washout!)
+    haze_mat, haze_col_sock, haze_dens_sock = _create_localized_haze_volume_material()
+    bm_vol = bmesh.new()
+    bmesh.ops.create_cube(bm_vol, size=1.0)
+    bmesh.ops.scale(bm_vol, vec=(8.2, 7.6, 3.9), verts=bm_vol.verts)
+    vol_mesh = bpy.data.meshes.new("VFX_WorkshopHaze_Mesh")
+    bm_vol.to_mesh(vol_mesh)
+    bm_vol.free()
+    haze_box = bpy.data.objects.new("VFX_WorkshopHaze_Domain", vol_mesh)
+    haze_box.location = (-0.4, 0.2, 1.95)
+    haze_box.data.materials.append(haze_mat)
+    link_exclusively(haze_box, vfx_col)
+
+    env_data["hero_window_loc"] = hero_win_loc
+    env_data["haze_col_sock"] = haze_col_sock
+    env_data["haze_dens_sock"] = haze_dens_sock
     return env_data

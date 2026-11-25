@@ -75,7 +75,10 @@ def main() -> None:
     elif args.mode == "debug":
         target_frames = list(DEBUG_FRAMES)
     else:
-        target_frames = list(range(args.start, args.end + 1))
+        # Include 1 padding frame on both ends so motion-blur subframes NEVER miss a sprite PNG!
+        pad_start = max(FRAME_START, args.start - 1)
+        pad_end = min(FRAME_END, args.end + 1)
+        target_frames = list(range(pad_start, pad_end + 1))
 
     mech_empty = create_6loc_mechanic_empty(target_frames)
     cam_data = build_30move_continuous_camera_rig(scene, sample_step=3, extra_frames=target_frames)

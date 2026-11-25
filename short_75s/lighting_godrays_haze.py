@@ -44,8 +44,8 @@ from short_75s.config_short import (  # noqa: E402
 from short_75s.story_beats import LIGHTING_MOOD_KEYS  # noqa: E402
 
 
-def _setup_haze_world(scene: bpy.types.Scene) -> Tuple[bpy.types.Node, bpy.types.Node]:
-    """Configure twilight-blue atmospheric world background + subtle volumetric haze density."""
+def _setup_haze_world(scene: bpy.types.Scene) -> bpy.types.Node:
+    """Configure clean deep-blue atmospheric world background (no global washout haze!)."""
     if scene.world is None:
         scene.world = bpy.data.worlds.new("Short75s_World")
     scene.world.use_nodes = True
@@ -53,22 +53,14 @@ def _setup_haze_world(scene: bpy.types.Scene) -> Tuple[bpy.types.Node, bpy.types
     nt.nodes.clear()
 
     out = nt.nodes.new("ShaderNodeOutputWorld")
-    out.location = (420, 0)
+    out.location = (360, 0)
 
     bg = nt.nodes.new("ShaderNodeBackground")
-    bg.location = (80, 100)
-    bg.inputs["Color"].default_value = hex_to_rgba("#1A2B4C")
-    bg.inputs["Strength"].default_value = 0.28
+    bg.location = (80, 0)
+    bg.inputs["Color"].default_value = hex_to_rgba("#182848")
+    bg.inputs["Strength"].default_value = 0.24
     nt.links.new(bg.outputs["Background"], out.inputs["Surface"])
-
-    # Subtle volumetric haze scatter for real EEVEE Next depth & god-ray atmosphere
-    vol = nt.nodes.new("ShaderNodeVolumeScatter")
-    vol.location = (80, -140)
-    vol.inputs["Color"].default_value = hex_to_rgba("#9BC0E8")
-    vol.inputs["Density"].default_value = 0.015
-    vol.inputs["Anisotropy"].default_value = 0.62
-    nt.links.new(vol.outputs["Volume"], out.inputs["Volume"])
-    return bg, vol
+    return bg
 
 
 def _create_area_light(
@@ -101,24 +93,60 @@ def build_75s_lighting_and_vfx(
     torch_tip_empty: bpy.types.Object,
     seam_prog_node: bpy.types.Node,
     seam_heat_node: bpy.types.Node,
-    godray_col_node: bpy.types.Node,
-    godray_alpha_node: bpy.types.Node,
+    hero_window_loc: Tuple[float, float, float],
+    haze_col_sock: bpy.types.NodeSocket,
+    haze_dens_sock: bpy.types.NodeSocket,
 ) -> Dict[str, Any]:
-    """Build dynamic Low-Sun + Long-Shadow + Blue-Shade + God-Ray + Dual-Arc VFX system."""
+    """Build dynamic Low-Sun + Long-Shadow + Blue-Shade + Single Real Window God Ray + Dual-Arc VFX."""
     vfx_col = get_or_create_collection("Col_VFX_Lighting")
-    bg_node, vol_node = _setup_haze_world(scene)
+    _setup_haze_world(scene)
+
+    # Enable real EEVEE Next Volumetric Shadows so the Window God Ray is PHYSICALLY BLOCKED
+    # by the window mullions, car, workbench, and character (NEVER penetrates props/char!)
+    eevee = scene.eevee
+    if hasattr(eevee, "use_volumetric_shadows"):
+        eevee.use_volumetric_shadows = True
+    if hasattr(eevee, "volumetric_tile_size"):
+        eevee.volumetric_tile_size = "4"
+    if hasattr(eevee, "volumetric_samples"):
+        eevee.volumetric_samples = 32
+    if hasattr(eevee, "volumetric_start"):
+        eevee.volumetric_start = 0.25
+    if hasattr(eevee, "volumetric_end"):
+        eevee.volumetric_end = 18.0
 
     # ==========================================================================
     # 1. LOW GRAZING SUN (`Light_LowSun`) -> LONG DRAMATIC SHADOWS
     # ==========================================================================
     sun_data = bpy.data.lights.new("Light_LowSun_Data", type="SUN")
-    sun_data.energy = 7.5
-    sun_data.angle = math.radians(1.2)  # Crisp dramatic long shadows!
+    sun_data.energy = 6.2
+    sun_data.angle = math.radians(1.2)
     if hasattr(sun_data, "use_shadow"):
         sun_data.use_shadow = True
     sun_obj = bpy.data.objects.new("Light_LowSun", sun_data)
     sun_obj.location = (-8.0, -3.0, 2.5)
     link_exclusively(sun_obj, vfx_col)
+
+    # ==========================================================================
+    # 1B. SINGLE PHYSICAL WINDOW GOD-RAY SPOT LIGHT (`Light_Window_GodRay`)
+    # Positioned OUTSIDE the Hero Window aiming cleanly through its 3D steel mullions!
+    # ==========================================================================
+    spot_data = bpy.data.lights.new("Light_Window_GodRay_Data", type="SPOT")
+    spot_data.energy = 2600.0
+    spot_data.color = hex_to_rgb("#FFC470")
+    spot_data.spot_size = math.radians(42.0)
+    spot_data.spot_blend = 0.28
+    spot_data.shadow_soft_size = 0.03
+    if hasattr(spot_data, "use_shadow"):
+        spot_data.use_shadow = True
+
+    spot_obj = bpy.data.objects.new("Light_Window_GodRay", spot_data)
+    wx, wy, wz = hero_window_loc
+    spot_origin = Vector((wx - 2.20, wy + 0.65, wz + 0.95))
+    spot_target = Vector((wx + 3.60, wy - 1.95, 0.35))
+    spot_obj.location = tuple(spot_origin)
+    spot_obj.rotation_euler = (spot_target - spot_origin).normalized().to_track_quat("-Z", "Y").to_euler()
+    link_exclusively(spot_obj, vfx_col)
 
     # ==========================================================================
     # 2. BLUE SHADE & WORKSHOP PRACTICAL PENDANT LIGHTS
@@ -170,13 +198,16 @@ def build_75s_lighting_and_vfx(
         blue_courtyard.data.energy = mk["blue_e"] * 0.85
         blue_courtyard.data.keyframe_insert(data_path="energy", frame=f)
 
-        godray_col_node.outputs[0].default_value = hex_to_rgba(mk["ray_col"])
-        godray_col_node.outputs[0].keyframe_insert(data_path="default_value", frame=f)
-        godray_alpha_node.outputs[0].default_value = mk["ray_alpha"]
-        godray_alpha_node.outputs[0].keyframe_insert(data_path="default_value", frame=f)
+        # Single physical Window God-Ray Spot Light + localized Volume Scatter haze!
+        spot_data.energy = 7500.0 * mk["ray_alpha"]
+        spot_data.color = hex_to_rgb(mk["ray_col"])
+        spot_data.keyframe_insert(data_path="energy", frame=f)
+        spot_data.keyframe_insert(data_path="color", frame=f)
 
-        vol_node.inputs["Density"].default_value = mk["haze"]
-        vol_node.inputs["Density"].keyframe_insert(data_path="default_value", frame=f)
+        haze_col_sock.default_value = hex_to_rgba(mk["ray_col"])
+        haze_col_sock.keyframe_insert(data_path="default_value", frame=f)
+        haze_dens_sock.default_value = mk["haze"]
+        haze_dens_sock.keyframe_insert(data_path="default_value", frame=f)
 
     # ==========================================================================
     # 3. DUAL-WINDOW WELDING ARC POINT LIGHT (`Welding_Arc_Light`) AT CAR CONTACT
