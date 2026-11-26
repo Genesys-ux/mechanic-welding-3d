@@ -1,10 +1,9 @@
 """
 short_75s/render_char_short.py — Stage 2 (Python with resvg-py):
-Drives `MekanikMudaCharacter` (unchanged 2.5D pipeline & style!) with natural, non-robotic
-acting across all 5 Acts & 6 Locations of the 75-second YouTube Short:
-  - Hook welding intensity -> natural walk cycle -> fender inspection -> grabbing steel plate ->
-    workbench prep -> turning Argon gas valve -> checking jack stands & ground clamp ->
-    pulling brass goggles down -> steady weaving welding pass -> pushing goggles up -> proud smile!
+Drives `MekanikMudaCharacter` (unchanged 2.5D pipeline & style!) with:
+  - Smooth natural `walk` cycle whenever moving (`action == "walk"`, NEVER dragged/sliding!)
+  - Natural held-prop poses (`grab_plate` for Steel Plate, `workbench_prep` for Chrome Wrench)
+  - Full 30-second multi-zone welding pass (Front -> Side -> Rear!) + goggles pull/push & proud smile!
 """
 
 from __future__ import annotations
@@ -28,28 +27,42 @@ from short_75s.config_short import (  # noqa: E402
     CAMERA_SYNC_PATH,
     CHAR_FRAMES_DIR,
     CHAR_HAND_SYNC_PATH,
-    CLIMAX_ARC_END,
-    CLIMAX_ARC_START,
     FPS,
+    FRONT_ARC_END,
+    FRONT_ARC_START,
     HOOK_ARC_END,
+    REAR_ARC_END,
+    REAR_ARC_START,
+    SIDE_ARC_END,
+    SIDE_ARC_START,
 )
 
 
 def build_75s_character_overrides(frame: int, action: str) -> Dict[str, Any]:
-    """Natural, expressive non-robotic 2.5D acting synced to the 75-second narration."""
     ov: Dict[str, Any] = {
         "animation": "idle",
         "ground_shadow": False,
         "pose": "ready",
         "prop": "none",
     }
-
-    # Subtle organic breathing / head bob so character NEVER feels stiff or robotic
     breath = math.sin(frame * 0.14)
-    ov["head_tilt"] = round(breath * 0.025, 4)
+    ov["head_tilt"] = round(breath * 0.022, 4)
 
-    # 1) HOOK (Frames 1..48): Explosive welding flash-forward!
-    if frame <= 48:
+    # 0) PRIORITY: Whenever character is walking between locations/zones, ALWAYS play natural walk!
+    if action == "walk":
+        ov["animation"] = "walk"
+        # Keep goggles down if walking between welding zones (1297..1588)!
+        goggles_down = frame >= 1035 and frame <= 1750
+        ov["hat_lift_y"] = -92.0 if goggles_down else 0.0
+        ov["hat_tilt"] = 0.0 if goggles_down else -6.0
+        ov["eyes"] = "focused" if goggles_down else "honey_oval"
+        ov["eyebrows"] = "angry" if goggles_down else "thick_arch"
+        ov["mouth"] = "smirk" if goggles_down else "confident_gap"
+        ov["mouth_open"] = 0.0 if goggles_down else 0.08
+        return ov
+
+    # 1) HOOK (Frames 1..47): Explosive welding flash-forward!
+    if action == "hook_weld" or frame <= 47:
         ov["hat_lift_y"] = -92.0
         ov["hat_tilt"] = 0.0
         ov["eyes"] = "focused"
@@ -61,87 +74,63 @@ def build_75s_character_overrides(frame: int, action: str) -> Dict[str, Any]:
         u_h = min(1.0, frame / float(max(1, HOOK_ARC_END)))
         zig = math.sin(frame * 1.2) * 3.0
         ov["left_hand_target"] = (-66.0, 250.0, 32.0)
-        ov["right_hand_target"] = (-26.0 + u_h * 10.0, 248.0 + zig, 51.0 - u_h * 3.0)
+        ov["right_hand_target"] = (-26.0 + u_h * 12.0, 248.0 + zig, 51.0 - u_h * 3.0)
         return ov
 
-    # 2) ACT 1: Walking in from courtyard -> inspecting broken red fender (49..336)
-    if frame <= 220:
-        ov["animation"] = "walk"
-        ov["hat_lift_y"] = 0.0
-        ov["hat_tilt"] = -6.0
-        ov["eyes"] = "honey_oval"
-        ov["eyebrows"] = "thick_arch"
-        ov["mouth"] = "confident_gap"
-        ov["mouth_open"] = 0.10
-        ov["eye_gaze_x"] = -0.20
-        ov["eye_gaze_y"] = 0.05
-        return ov
-
-    if frame <= 336:
-        # Inspecting cracked fender naturally (hand reaches out, then confident smirk!)
+    # 2) ACT 1: Inspecting cracked front fender (245..330)
+    if action == "inspect_fender":
         ov["hat_lift_y"] = 0.0
         ov["hat_tilt"] = -5.0
-        ov["eyes"] = "focused" if frame < 290 else "honey_oval"
+        ov["eyes"] = "focused" if frame < 300 else "honey_oval"
         ov["eyebrows"] = "thick_arch"
-        ov["mouth"] = "smirk" if frame < 300 else "confident_gap"
-        ov["mouth_open"] = 0.0 if frame < 300 else 0.22
+        ov["mouth"] = "smirk" if frame < 305 else "confident_gap"
+        ov["mouth_open"] = 0.0 if frame < 305 else 0.22
         ov["eye_gaze_x"] = -0.40
-        ov["eye_gaze_y"] = 0.25 if frame < 290 else 0.0
-        ov["head_tilt"] = -0.07 if frame < 290 else 0.03
-        ov["right_hand_target"] = (-28.0, 255.0 + breath * 3.0, 48.0)
+        ov["eye_gaze_y"] = 0.24 if frame < 300 else 0.0
+        ov["head_tilt"] = -0.06 if frame < 300 else 0.02
+        ov["right_hand_target"] = (-24.0, 252.0 + breath * 3.0, 48.0)
         ov["left_hand_target"] = (-54.0, 276.0, 26.0)
         return ov
 
-    # 3) ACT 2: Parts Alcove (337..440) -> Workbench (441..544) -> MIG Welder & Argon Tank (545..696)
-    if action == "walk":
-        ov["animation"] = "walk"
-        ov["hat_lift_y"] = 0.0
-        ov["hat_tilt"] = -6.0
-        ov["eyes"] = "focused"
-        ov["eyebrows"] = "thick_arch"
-        ov["mouth"] = "smirk"
-        ov["mouth_open"] = 0.0
-        return ov
-
-    if frame <= 440:
-        # Grabbing fresh steel repair plate from LOC 5 shelf
+    # 3) ACT 2A: Holding real 3D Steel Repair Plate at LOC 5 (442..478)
+    if action == "grab_plate":
         ov["hat_lift_y"] = 0.0
         ov["hat_tilt"] = -4.0
         ov["eyes"] = "focused"
         ov["eyebrows"] = "thick_arch"
         ov["mouth"] = "smirk"
         ov["mouth_open"] = 0.0
-        ov["right_hand_target"] = (-22.0, 210.0 + breath * 4.0, 50.0)
-        ov["left_hand_target"] = (-48.0, 222.0, 44.0)
+        ov["right_hand_target"] = (-16.0, 238.0 + breath * 4.0, 48.0)
+        ov["left_hand_target"] = (-44.0, 240.0 + breath * 4.0, 44.0)
         return ov
 
-    if frame <= 544:
-        # Selecting chrome wrench at Master Workbench (LOC 3)
+    # 4) ACT 2B: Holding real 3D Chrome Wrench at LOC 3 Workbench (628..660)
+    if action == "workbench_prep":
         ov["hat_lift_y"] = 0.0
         ov["hat_tilt"] = -5.0
         ov["eyes"] = "honey_oval"
         ov["eyebrows"] = "thick_arch"
         ov["mouth"] = "confident_gap"
         ov["mouth_open"] = 0.14
-        ov["right_hand_target"] = (-16.0, 205.0 + breath * 4.0, 46.0)
+        ov["right_hand_target"] = (-14.0, 232.0 + breath * 4.0, 48.0)
         ov["left_hand_target"] = (-52.0, 268.0, 28.0)
         return ov
 
-    if frame <= 696:
-        # Turning Argon gas valve & flipping MIG welder switch (LOC 4)
+    # 5) ACT 2C: Opening Argon valve & activating MIG welder at LOC 4 (728..778)
+    if action == "welder_prep":
         ov["hat_lift_y"] = 0.0
         ov["hat_tilt"] = -5.0
         ov["eyes"] = "focused"
         ov["eyebrows"] = "thick_arch"
         ov["mouth"] = "smirk"
         ov["mouth_open"] = 0.0
-        twist = math.sin(frame * 0.45) * 8.0
-        ov["right_hand_target"] = (-18.0 + twist, 218.0, 48.0)
+        twist = math.sin(frame * 0.42) * 7.0
+        ov["right_hand_target"] = (-16.0 + twist, 224.0, 48.0)
         ov["left_hand_target"] = (-50.0, 260.0, 32.0)
         return ov
 
-    # 4) ACT 3: Checking Jack Stands & Ground Clamp -> Pulling Brass Goggles Down (697..1032)
-    if frame <= 875:
+    # 6) ACT 3: Checking Jack Stands & Ground Clamp (820..950)
+    if action in ("check_jack", "clip_clamp"):
         ov["hat_lift_y"] = 0.0
         ov["hat_tilt"] = -5.0
         ov["eyes"] = "focused"
@@ -149,19 +138,19 @@ def build_75s_character_overrides(frame: int, action: str) -> Dict[str, Any]:
         ov["mouth"] = "smirk"
         ov["mouth_open"] = 0.0
         ov["head_tilt"] = -0.10
-        ov["eye_gaze_y"] = 0.30
-        ov["right_hand_target"] = (-20.0, 295.0, 44.0)
-        ov["left_hand_target"] = (-56.0, 285.0, 30.0)
+        ov["eye_gaze_y"] = 0.28
+        ov["right_hand_target"] = (-20.0, 290.0, 44.0)
+        ov["left_hand_target"] = (-56.0, 284.0, 30.0)
         return ov
 
-    if frame <= 1032:
-        # Iconic Goggles Pull-Down (Frames 910..960) + Torch Ready (961..1032)
-        if frame < 910:
+    # 7) ACT 3B: Pulling Brass Goggles Down (985..1080)
+    if action in ("goggles_pull", "weld_ready"):
+        if frame < 995:
             ov["hat_lift_y"] = 0.0
             ov["hat_tilt"] = -6.0
-        elif frame <= 960:
-            ov["hat_lift_y"] = interpolate(frame, [910, 922, 950, 960], [0.0, 6.0, -88.0, -92.0], easing=Easing.in_out_cubic)
-            ov["hat_tilt"] = interpolate(frame, [910, 948, 960], [-6.0, -1.0, 0.0], easing=Easing.in_out_quad)
+        elif frame <= 1045:
+            ov["hat_lift_y"] = interpolate(frame, [995, 1006, 1034, 1045], [0.0, 6.0, -88.0, -92.0], easing=Easing.in_out_cubic)
+            ov["hat_tilt"] = interpolate(frame, [995, 1034, 1045], [-6.0, -1.0, 0.0], easing=Easing.in_out_quad)
         else:
             ov["hat_lift_y"] = -92.0
             ov["hat_tilt"] = 0.0
@@ -173,22 +162,22 @@ def build_75s_character_overrides(frame: int, action: str) -> Dict[str, Any]:
         ov["eye_gaze_x"] = -0.45
         ov["eye_gaze_y"] = 0.20
 
-        if 900 <= frame <= 968:
-            lx = interpolate(frame, [900, 922, 952, 968], [-54.0, -34.0, -30.0, -58.0])
-            ly = interpolate(frame, [900, 922, 952, 968], [285.0, 108.0, 142.0, 240.0])
-            lz = interpolate(frame, [900, 922, 952, 968], [24.0, 42.0, 44.0, 32.0])
+        if 988 <= frame <= 1052:
+            lx = interpolate(frame, [988, 1008, 1036, 1052], [-54.0, -34.0, -30.0, -58.0])
+            ly = interpolate(frame, [988, 1008, 1036, 1052], [285.0, 108.0, 142.0, 240.0])
+            lz = interpolate(frame, [988, 1008, 1036, 1052], [24.0, 42.0, 44.0, 32.0])
             ov["left_hand_target"] = (lx, ly, lz)
         else:
             ov["left_hand_target"] = (-66.0, 250.0, 32.0)
 
-        rx = interpolate(frame, [876, 940, 1015, 1032], [30.0, -6.0, -34.0, -34.0], easing=Easing.in_out_quad)
-        ry = interpolate(frame, [876, 940, 1015, 1032], [280.0, 260.0, 248.0, 248.0], easing=Easing.in_out_quad)
-        rz = interpolate(frame, [876, 940, 1015, 1032], [32.0, 44.0, 54.0, 54.0], easing=Easing.in_out_quad)
+        rx = interpolate(frame, [985, 1035, 1080], [20.0, -16.0, -34.0], easing=Easing.in_out_quad)
+        ry = interpolate(frame, [985, 1035, 1080], [275.0, 256.0, 248.0], easing=Easing.in_out_quad)
+        rz = interpolate(frame, [985, 1035, 1080], [36.0, 48.0, 54.0], easing=Easing.in_out_quad)
         ov["right_hand_target"] = (rx, ry, rz)
         return ov
 
-    # 5) ACT 4: High-Energy Welding Climax (1033..1435)
-    if frame <= CLIMAX_ARC_END:
+    # 8) ACT 4 (LAST 30 SECONDS): FRONT -> SIDE -> REAR WELDING!
+    if action in ("weld_front", "weld_side", "weld_rear"):
         ov["hat_lift_y"] = -92.0
         ov["hat_tilt"] = 0.0
         ov["eyes"] = "focused"
@@ -197,55 +186,35 @@ def build_75s_character_overrides(frame: int, action: str) -> Dict[str, Any]:
         ov["mouth_open"] = 0.0
         ov["eye_gaze_x"] = -0.45
         ov["eye_gaze_y"] = 0.22
-        if frame <= CLIMAX_ARC_START + 8:
-            ov["head_tilt"] = 0.05
-            ov["squash_x"] = 1.03
-            ov["squash_y"] = 0.97
-        else:
-            ov["head_tilt"] = -0.05 + breath * 0.015
+        ov["head_tilt"] = -0.05 + breath * 0.015
 
-        u_w = (frame - CLIMAX_ARC_START) / float(max(1, CLIMAX_ARC_END - CLIMAX_ARC_START))
-        zig = math.sin((frame - CLIMAX_ARC_START) * 1.15) * 3.0
+        if action == "weld_front":
+            u_w = max(0.0, min(1.0, (frame - FRONT_ARC_START) / float(max(1, FRONT_ARC_END - FRONT_ARC_START))))
+        elif action == "weld_side":
+            u_w = max(0.0, min(1.0, (frame - SIDE_ARC_START) / float(max(1, SIDE_ARC_END - SIDE_ARC_START))))
+        else:
+            u_w = max(0.0, min(1.0, (frame - REAR_ARC_START) / float(max(1, REAR_ARC_END - REAR_ARC_START))))
+
+        zig = math.sin(frame * 1.15) * 3.0
         ov["left_hand_target"] = (-68.0, 252.0, 32.0)
         ov["right_hand_target"] = (-34.0 + u_w * 26.0, 248.0 + zig, 54.0 - u_w * 8.0)
         return ov
 
-    # 6) ACT 5: Cooling Ember, Goggles Push-Up & Triumphant Sunset Smile (1436..1800)
-    if frame < 1518:
-        ov["hat_lift_y"] = -92.0
-        ov["hat_tilt"] = 0.0
-    elif frame <= 1565:
-        ov["hat_lift_y"] = interpolate(frame, [1518, 1528, 1554, 1565], [-92.0, -86.0, 5.0, 0.0], easing=Easing.in_out_cubic)
-        ov["hat_tilt"] = interpolate(frame, [1518, 1554, 1565], [0.0, -6.5, -6.0], easing=Easing.in_out_quad)
+    # 9) FINAL PAYOFF (1749..1800): Goggles Push-Up & Proud Sunset Smile!
+    if frame <= 1775:
+        ov["hat_lift_y"] = interpolate(frame, [1749, 1756, 1768, 1775], [-92.0, -86.0, 5.0, 0.0], easing=Easing.in_out_cubic)
+        ov["hat_tilt"] = interpolate(frame, [1749, 1768, 1775], [0.0, -6.5, -6.0], easing=Easing.in_out_quad)
     else:
         ov["hat_lift_y"] = 0.0
         ov["hat_tilt"] = -6.0
 
-    if frame <= 1535:
-        ov["eyes"] = "focused"
-        ov["eyebrows"] = "thick_arch"
-        ov["mouth"] = "smirk"
-        ov["mouth_open"] = 0.05
-    else:
-        ov["eyes"] = "honey_oval"
-        ov["eyebrows"] = "happy"
-        ov["mouth"] = "confident_gap"
-        ov["mouth_open"] = 0.36
-        ov["eye_gaze_x"] = -0.08
-        ov["eye_gaze_y"] = 0.0
-        if 1575 <= frame <= 1645:
-            ov["head_tilt"] = interpolate(frame, [1575, 1605, 1645], [0.02, -0.08, 0.01], easing=Easing.in_out_quad)
-
-    if 1510 <= frame <= 1575:
-        lx = interpolate(frame, [1510, 1528, 1556, 1575], [-56.0, -30.0, -34.0, -54.0])
-        ly = interpolate(frame, [1510, 1528, 1556, 1575], [230.0, 142.0, 106.0, 286.0])
-        lz = interpolate(frame, [1510, 1528, 1556, 1575], [32.0, 44.0, 42.0, 24.0])
-        ov["left_hand_target"] = (lx, ly, lz)
-
-    rx = interpolate(frame, [1436, 1485, 1555, 1800], [-8.0, 22.0, 44.0, 44.0], easing=Easing.out_cubic)
-    ry = interpolate(frame, [1436, 1485, 1555, 1800], [248.0, 236.0, 284.0, 284.0], easing=Easing.out_cubic)
-    rz = interpolate(frame, [1436, 1485, 1555, 1800], [46.0, 40.0, 30.0, 30.0], easing=Easing.out_cubic)
-    ov["right_hand_target"] = (rx, ry, rz)
+    ov["eyes"] = "honey_oval"
+    ov["eyebrows"] = "happy"
+    ov["mouth"] = "confident_gap"
+    ov["mouth_open"] = 0.36
+    ov["eye_gaze_x"] = -0.08
+    ov["eye_gaze_y"] = 0.0
+    ov["right_hand_target"] = (40.0, 282.0, 30.0)
     return ov
 
 

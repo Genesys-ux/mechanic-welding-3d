@@ -51,11 +51,17 @@ DEBUG_FRAMES: List[int] = [
     1650,  # 68.8s — LOC 2->1: Golden sunset god-rays heroic payoff & pull-out
 ]
 
-# Active welding arc windows (Hook flash-forward + Climax welding pass)
+# Active welding arc windows (Hook + 30s Finale: Front -> Side -> Rear!)
 HOOK_ARC_START: int = 1
 HOOK_ARC_END: int = 38
-CLIMAX_ARC_START: int = 1033
-CLIMAX_ARC_END: int = 1435
+FRONT_ARC_START: int = 1081
+FRONT_ARC_END: int = 1296
+SIDE_ARC_START: int = 1337
+SIDE_ARC_END: int = 1536
+REAR_ARC_START: int = 1589
+REAR_ARC_END: int = 1748
+CLIMAX_ARC_START: int = FRONT_ARC_START
+CLIMAX_ARC_END: int = REAR_ARC_END
 
 RANDOM_SEED: int = 75
 
